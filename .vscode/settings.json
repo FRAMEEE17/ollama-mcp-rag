@@ -1,0 +1,33 @@
+{
+  "editor.formatOnSave": true,
+  "javascript.format.semicolons": "remove",
+  "javascript.preferences.quoteStyle": "single",
+  "typescript.format.semicolons": "remove",
+  "typescript.preferences.quoteStyle": "single",
+  "html.format.wrapAttributes": "preserve-aligned",
+  "vue.format.wrapAttributes": "preserve-aligned",
+  "html.format.wrapLineLength": 0,
+  "prettier.enable": false,
+  "[typescript]": {
+    "editor.defaultFormatter": "vscode.typescript-language-features"
+  },
+  "[json]": {
+    "editor.defaultFormatter": "vscode.json-language-features"
+  },
+  "[vue]": {
+    "editor.defaultFormatter": "Vue.volar"
+  },
+  "cSpell.words": [
+    "composables",
+    "dexie",
+    "groq",
+    "jina",
+    "knowledgebase",
+    "nuxt",
+    "Slideover"
+  ],
+  "i18n-ally.localesPaths": [
+    "locales"
+  ],
+  "i18n-ally.keystyle": "nested",
+}
