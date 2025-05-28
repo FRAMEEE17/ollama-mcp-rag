@@ -45,3 +45,5 @@ export async function getOllama(event: H3Event<EventHandlerRequest>, interceptRe
 
   return createOllama(endpoint, username, password)
 }
+
+// health check for ollama server

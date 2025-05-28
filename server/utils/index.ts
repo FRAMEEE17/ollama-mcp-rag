@@ -1,5 +1,5 @@
 import type { H3Event, EventHandlerRequest } from 'h3'
-
+// server-sent events (SSE) for streaming data 
 export const setEventStreamResponse = (event: H3Event<EventHandlerRequest>) => {
   setResponseHeader(event, 'Content-Type', 'text/event-stream');
   setResponseHeader(event, 'Cache-Control', 'no-cache');

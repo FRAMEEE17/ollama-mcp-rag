@@ -12,7 +12,7 @@ interface Metadata {
   description?: string
   language?: string
 }
-
+// recuresibe url loader
 export interface RecursiveUrlLoaderOptions {
   excludeDirs?: string[]
   extractor?: (text: string) => string
@@ -24,7 +24,7 @@ export interface RecursiveUrlLoaderOptions {
   fetch?: typeof fetch
   excludeGlobs?: string[]
 }
-
+// depth limited recursive url loader
 export class RecursiveUrlLoader extends BaseDocumentLoader implements DocumentLoader {
   private caller: AsyncCaller
 
@@ -78,7 +78,7 @@ export class RecursiveUrlLoader extends BaseDocumentLoader implements DocumentLo
         : fetch(resource, { ...rest, signal: AbortSignal.timeout(timeout) })
     )
   }
-
+  // link extractor
   private getChildLinks(html: string, baseUrl: string): Array<string> {
     const allLinks = Array.from(
       new JSDOM(html).window.document.querySelectorAll('a')
@@ -142,7 +142,7 @@ export class RecursiveUrlLoader extends BaseDocumentLoader implements DocumentLo
 
     return Array.from(new Set(absolutePaths))
   }
-
+  // metadata extractor
   private extractMetadataFn(rawHtml: string, url: string) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const metadata: Metadata = { source: url }

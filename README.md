@@ -1,37 +1,10 @@
-English | [简体中文](README.zh-Hans.md)
+# Enterprise Research Assistant Project - Comprehensive Description
 
-# ChatOllama
+This project is an Enterprise Research Assistant built on a sophisticated MCP (Model Context Protocol) architecture designed to revolutionize how researchers, academics, and enterprise professionals conduct information discovery and analysis. The system employs a self-hosting AI application using Open-WebUI as the primary interface, integrated with an intelligent agent powered by Gemma LLM that orchestrates multiple specialized tools through a unified MCP client. At its core, the architecture features a single MCP server that manages five distinct but interconnected tools: an Automated Dynamic Web Scraper using Puppeteer for real-time content extraction from dynamic websites, a Query Paper tool that interfaces with ArXiv API to access academic literature, a RAG (Retrieval-Augmented Generation) Hybrid Search engine that combines vector similarity search with keyword-based retrieval and advanced reranking algorithms, a Smart Cache Manager for long-term memory and session optimization, and a Multimodal Web Search tool leveraging Brave Search API for comprehensive real-time information gathering.
+The system's intelligence lies in its hybrid RAG implementation within the search component, which operates on multiple specialized collections stored in Milvus vector database, including academic papers from ArXiv, enterprise documents such as annual reports and financial data, technical documentation, web content, and personalized user personas. This RAG engine performs semantic vector searches alongside traditional keyword matching, then employs sophisticated fusion algorithms and relevance reranking to deliver contextually rich results. The agent workflow follows a three-phase process: first, Gemma LLM analyzes incoming queries to determine optimal tool selection and orchestration strategy; second, the selected MCP tools execute in parallel or sequence to gather information from various sources including live APIs, vector databases, and cached content; third, the agent synthesizes all retrieved information into comprehensive, well-sourced responses with proper attribution and context.
 
-`ChatOllama` is an open source chatbot based on LLMs. It supports a wide range of language models including:
-
-- OpenAI / Azure OpenAI
-- Anthropic
-- Gemini
-- Groq
-- [Volcano Engine](https://github.com/volcengine)
-- Moonshot
-- SiliconFlow
-- Tongyi
-- Ollama served models
-
-`ChatOllama` supports multiple types of chat:
-
-- Free chat with LLMs (text and image input)
-- Chat with LLMs based on knowledge base
-
-`ChatOllama` feature list:
-- Ollama models management
-- Knowledge bases management
-- Rich chat interface with text and image support
-- Commercial LLMs API keys management
-
-## Join Our Community
-
-If you are a user, contributor, or even just new to `ChatOllama`, you are more than welcome to join our community on Discord by clicking the [invite link](https://discord.gg/TjhZGYv5pC).
-
-If you are a contributor, the channel `technical-discussion` is for you, where we discuss technical stuff.
-
-If you have any issue in `ChatOllama` usage, please report to channel `customer-support`. We will help you out as soon as we can.
+The systems architecture is designed for both research depth and enterprise scalability, utilizing Milvus for high-performance vector operations across multiple domain-specific collections (AI research papers, security intelligence, MLOps documentation, infrastructure guides, and financial reports), OpenMemory for persistent user context and conversation continuity, and a multi-tier caching strategy that includes session management, query result caching, and long-term user preference learning. External integrations include ArXiv API for real-time academic paper access, Brave Search API for comprehensive web coverage, and Puppeteer-based web scraping for dynamic content that requires JavaScript rendering. The entire system is engineered as a monolithic but modular architecture that can quickly demonstrate multi-agent capabilities while maintaining the flexibility to scale into microservices as requirements grow.
+The project's core value proposition addresses the critical need for intelligent research automation in both academic and enterprise contexts, providing capabilities that span from literature reviews and competitive intelligence to technical documentation analysis and trend identification. Unlike traditional RAG systems that focus solely on document retrieval, this architecture implements agentic tool orchestration where the AI agent makes intelligent decisions about which tools to employ, how to combine their outputs, and how to present synthesized insights that maintain source attribution and context relevance. The system is particularly designed for multi-domain expertise, capable of seamlessly transitioning between academic research, financial analysis, technical documentation, security intelligence, and infrastructure planning within a single conversational interface, making it an ideal solution for research professionals, graduate students, financial analysts, and enterprise teams who require rapid access to high-quality, well-sourced information across diverse knowledge domains.
 
 ## Quick Start
 

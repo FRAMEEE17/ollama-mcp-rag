@@ -19,6 +19,7 @@ import { ChatOllama } from '@langchain/ollama'
 import { StructuredToolInterface, tool } from '@langchain/core/tools'
 import { BaseChatModel } from '@langchain/core/language_models/chat_models'
 
+// Interface definitions for request/response structure
 interface MessageContent {
   type: string
   text?: string
@@ -26,18 +27,19 @@ interface MessageContent {
 }
 
 interface RequestBody {
-  knowledgebaseId: number
-  model: string
-  family: string
-  messages: {
+  knowledgebaseId: number        // ID of knowledge base to query (optional)
+  model: string                  // Model name (e.g., 'gpt-4', 'claude-3')
+  family: string                 // Model family (e.g., 'openai', 'anthropic')
+  messages: {                    // Chat history
     role: 'user' | 'assistant'
-    content: string | MessageContent[]
-    toolCallId?: string
-    toolResult: boolean
+    content: string | MessageContent[]  // Text or multimodal content
+    toolCallId?: string          // For tool response messages
+    toolResult: boolean          // Whether this is a tool result
   }[]
-  stream: any
+  stream: any                    // Whether to stream response
 }
 
+// System prompt template for RAG (Retrieval Augmented Generation)
 const SYSTEM_TEMPLATE = `Answer the user's question based on the context below.
 Present your answer in a structured Markdown format.
 
@@ -58,10 +60,11 @@ If the context doesn't contain any relevant information to the question, don't m
 Answer:
 `
 
+// Helper function: Convert messages array to string format for prompt
 const serializeMessages = (messages: RequestBody['messages']): string =>
   messages.map((message) => {
     if (Array.isArray(message.content)) {
-      // For image messages, only include text parts
+      // For multimodal messages (text + images), extract only text parts
       const textParts = message.content
         .filter((part): part is MessageContent & { text: string } =>
           part.type === 'text' && typeof part.text === 'string'
@@ -70,31 +73,37 @@ const serializeMessages = (messages: RequestBody['messages']): string =>
         .join(' ')
       return `${message.role}: ${textParts}`
     }
+    // For simple text messages
     return `${message.role}: ${message.content}`
   }).join("\n")
 
+// Helper function: Transform messages to LangChain format
 const transformMessages = (messages: RequestBody['messages']): BaseMessageLike[] =>
   messages.map((message) => {
     if (Array.isArray(message.content)) {
-      // Handle array content format (text + images)
+      // Handle multimodal content (text + images)
       return [message.role, message.content]
     }
-    // Handle string content format
+    // Handle simple text content
     return [message.role, message.content]
   })
 
+// Helper function: Normalize messages to specific LangChain message types
 const normalizeMessages = (messages: RequestBody['messages']): BaseMessage[] => {
   const normalizedMessages = []
   for (const message of messages) {
     if (message.toolResult) {
+      // Tool execution results
       normalizedMessages.push(new ToolMessage(message.content as string, message.toolCallId!))
     } else if (message.role === "user") {
+      // User messages (text or multimodal)
       if (Array.isArray(message.content)) {
         normalizedMessages.push(new HumanMessage({ content: message.content }))
       } else {
         normalizedMessages.push(new HumanMessage(message.content))
       }
     } else if (message.role === "assistant") {
+      // Assistant messages
       normalizedMessages.push(new AIMessage(message.content as string))
     }
   }
@@ -102,29 +111,43 @@ const normalizeMessages = (messages: RequestBody['messages']): BaseMessage[] => 
   return normalizedMessages
 }
 
+// Main API handler
 export default defineEventHandler(async (event) => {
+  // Parse request body
   const { knowledgebaseId, model, family, messages, stream } = await readBody<RequestBody>(event)
 
+  // 📚 KNOWLEDGE BASE CHAT PATH
+  // If knowledgebaseId is provided, use RAG (Retrieval Augmented Generation)
   if (knowledgebaseId) {
     console.log("Chat with knowledge base with id: ", knowledgebaseId)
+    
+    // 🔍 Fetch knowledge base from database
     const knowledgebase = await prisma.knowledgeBase.findUnique({
       where: {
         id: knowledgebaseId,
       },
     })
     console.log(`Knowledge base ${knowledgebase?.name} with embedding "${knowledgebase?.embedding}"`)
+    
     if (!knowledgebase) {
       setResponseStatus(event, 404, `Knowledge base with id ${knowledgebaseId} not found`)
       return
     }
 
+    // Create embeddings model for vector search
     const embeddings = createEmbeddings(knowledgebase.embedding!, event)
+    
+    // Create retriever for finding relevant documents
     const retriever: BaseRetriever = await createRetriever(embeddings, `collection_${knowledgebase.id}`)
 
+    // Create chat model
     const chat = createChatModel(model, family, event)
+    
+    // Extract user query from the last message
     const query = (() => {
       const lastMessage = messages[messages.length - 1].content
       if (Array.isArray(lastMessage)) {
+        // For multimodal content, extract text parts
         return lastMessage
           .filter((part): part is MessageContent & { text: string } =>
             part.type === 'text' && typeof part.text === 'string'
@@ -136,15 +159,18 @@ export default defineEventHandler(async (event) => {
     })()
     console.log("User query: ", query)
 
+    //TODO: Coreference resolution (currently commented out)
     // const reformulatedResult = await resolveCoreference(query, normalizeMessages(messages), chat)
     const reformulatedQuery = query
     console.log("Reformulated query: ", reformulatedQuery)
 
+    // Retrieve relevant documents from vector store
     const relevant_docs = await retriever.invoke(reformulatedQuery)
     console.log("Relevant documents: ", relevant_docs)
 
     let rerankedDocuments = relevant_docs
 
+    // OPTIONAL: Cohere reranking for better document relevance
     if ((process.env.COHERE_API_KEY || process.env.COHERE_BASE_URL) && process.env.COHERE_MODEL) {
       const options = {
         apiKey: process.env.COHERE_API_KEY,
@@ -158,6 +184,7 @@ export default defineEventHandler(async (event) => {
       console.log("Cohere reranked documents: ", rerankedDocuments)
     }
 
+    // Create RAG chain: Context + Chat History + Question → LLM
     const chain = RunnableSequence.from([
       {
         question: (input: { question: string; chatHistory?: string }) =>
@@ -165,6 +192,7 @@ export default defineEventHandler(async (event) => {
         chatHistory: (input: { question: string; chatHistory?: string }) =>
           input.chatHistory ?? "",
         context: async () => {
+          // Format retrieved documents as context string
           return formatDocumentsAsString(rerankedDocuments)
         },
       },
@@ -172,6 +200,7 @@ export default defineEventHandler(async (event) => {
       chat
     ])
 
+    // NON-STREAMING RESPONSE
     if (!stream) {
       const response = await chain.invoke({
         question: query,
@@ -182,18 +211,21 @@ export default defineEventHandler(async (event) => {
         message: {
           role: 'assistant',
           content: typeof response?.content === 'string' ? response.content : response?.content.toString(),
-          relevant_docs
+          relevant_docs  // Include relevant documents in response
         }
       }
     }
 
+    // STREAMING RESPONSE
     setEventStreamResponse(event)
     const response = await chain.stream({
       question: query,
       chatHistory: serializeMessages(messages),
     })
 
+    // Create readable stream for Server-Sent Events
     const readableStream = Readable.from((async function* () {
+      // Stream each chunk of the response
       for await (const chunk of response) {
         if (chunk?.content !== undefined) {
           const message = {
@@ -206,6 +238,7 @@ export default defineEventHandler(async (event) => {
         }
       }
 
+      // Send relevant documents at the end
       const docsChunk = {
         type: "relevant_documents",
         relevant_documents: rerankedDocuments
@@ -213,21 +246,30 @@ export default defineEventHandler(async (event) => {
       yield `${JSON.stringify(docsChunk)} \n\n`
     })())
     return sendStream(event, readableStream)
+    
   } else {
+    // REGULAR CHAT PATH (without knowledge base)
+    
+    // Create chat model
     let llm = createChatModel(model, family, event)
 
+    // MCP (Model Context Protocol) - Tool Calling Setup
     const mcpService = new McpService()
     const normalizedTools = await mcpService.listTools()
+    
+    // Create tools map for quick lookup
     const toolsMap = normalizedTools.reduce((acc: Record<string, StructuredToolInterface>, tool) => {
       acc[tool.name] = tool
       return acc
     }, {})
 
+    // Bind tools to LLM if supported
     if (llm?.bindTools) {
       console.log("Binding tools to LLM")
       llm = llm.bindTools(normalizedTools) as BaseChatModel
     }
 
+    // NON-STREAMING RESPONSE
     if (!stream) {
       const response = await llm.invoke(transformMessages(messages))
       console.log(response)
@@ -239,23 +281,25 @@ export default defineEventHandler(async (event) => {
       }
     }
 
+    // STREAMING RESPONSE WITH TOOL CALLING
     console.log("Streaming response")
     const transformedMessages = messages.map((message: RequestBody['messages'][number]) => {
       return [message.role, message.content]
     }) as BaseMessageLike[]
+    
     const response = await llm?.stream(transformedMessages)
-
     console.log(response)
 
     const readableStream = Readable.from((async function* () {
-
       let gathered = undefined
 
+      // Stream response chunks
       for await (const chunk of response) {
+        // Accumulate chunks for potential tool calling
         gathered = gathered !== undefined ? concat(gathered, chunk) : chunk
 
         let content = chunk?.content
-        // Handle array of text_delta objects
+        // Handle different content formats
         if (Array.isArray(content)) {
           content = content
             .filter(item => item.type === 'text_delta' || item.type === 'text')
@@ -263,6 +307,7 @@ export default defineEventHandler(async (event) => {
             .join('')
         }
 
+        // Send content chunk to client
         const message = {
           message: {
             role: 'assistant',
@@ -272,17 +317,21 @@ export default defineEventHandler(async (event) => {
         yield `${JSON.stringify(message)} \n\n`
       }
 
+      // TOOL CALLING EXECUTION
       const toolMessages = [] as ToolMessage[]
       console.log("Gathered response: ", gathered)
+      
+      // Process each tool call made by the LLM
       for (const toolCall of gathered?.tool_calls ?? []) {
         console.log("Tool call: ", toolCall)
         const selectedTool = toolsMap[toolCall.name]
 
         if (selectedTool) {
+          // Execute the tool
           const result = await selectedTool.invoke(toolCall)
-
           console.log("Tool result: ", result)
 
+          // Send tool result to client
           const message = {
             message: {
               role: "user",
@@ -297,17 +346,23 @@ export default defineEventHandler(async (event) => {
         }
       }
 
+      // Clean up MCP service
       await mcpService.close()
 
+      // FINAL RESPONSE WITH TOOL RESULTS
       if (toolMessages.length) {
         console.log("Inferencing with tool results")
+        // Add tool call and results to conversation history
         transformedMessages.push(new AIMessage(gathered as AIMessageFields))
         transformedMessages.push(...toolMessages)
+        
+        // Get final response from LLM with tool results
         const finalResponse = await llm.stream(transformedMessages as BaseMessageLike[])
 
+        // Stream the final response
         for await (const chunk of finalResponse) {
           let content = chunk?.content
-          // Handle array of text_delta objects
+          // Handle different content formats
           if (Array.isArray(content)) {
             content = content
               .filter((item): item is MessageContent & { type: 'text_delta'; text: string } | { type: 'text'; text: string } =>

@@ -10,7 +10,7 @@ import { createRetriever } from '@/server/retriever'
 import type { PageParser } from '@/server/types'
 import { RecursiveUrlLoader, type RecursiveUrlLoaderOptions } from '@/server/utils/recursiveUrlLoader'
 import type { ChunkSettings } from '~/server/types'
-
+// document loaders
 export const loadDocuments = async (file: MultiPartData) => {
   const Loaders = {
     pdf: PDFLoader,
