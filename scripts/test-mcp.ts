@@ -3,8 +3,8 @@ import fs from 'fs'
 import { exec } from 'child_process'
 import { promisify } from 'util'
 
-// TODO: Setup minimal environment for MCP testing
-process.env.NODE_ENV = 'development'
+// // TODO: Setup minimal environment for MCP testing
+// process.env.NODE_ENV = 'development'
 
 // TODO: Load environment variables from .env file manually
 const loadEnvFile = () => {
