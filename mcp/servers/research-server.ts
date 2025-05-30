@@ -9,46 +9,39 @@ import {
   type ListToolsRequest,
   type Tool
 } from '@modelcontextprotocol/sdk/types.js'
-import { z } from 'zod'
 
-// Import ArXiv tool 
-class ArxivQueryTool {
+class ArxivTool {
   private readonly baseUrl = 'http://export.arxiv.org/api/query'
   private readonly userAgent = 'Enterprise-Research-Assistant/1.0'
 
   constructor() {
-    console.error('[ArXiv Tool] Initialized ArXiv query tool')
+    console.error('[Enhanced ArXiv Tool] Initialized')
   }
 
   async execute(args: any): Promise<any> {
     const startTime = Date.now()
     
     try {
-      // Validate input arguments
+      // Validate and structure params to match API
       const params = {
-        query: args.query || '',
-        max_results: Math.min(args.max_results || 5, 20),
-        sort_by: args.sort_by || 'relevance',
-        category: args.category || ''
+        keywords: Array.isArray(args.keywords) ? args.keywords : 
+                 args.query ? [args.query] : [],
+        max_results: Math.min(args.max_results || 10, 50),
+        recent_only: args.recent_only || false,
+        days_back: args.days_back || 365,
+        categories: Array.isArray(args.categories) ? args.categories : [],
+        sort_by: args.sort_by || 'relevance'
       }
 
-      console.error('[ArXiv Tool] Executing search with params:', params)
+      console.error('[Enhanced ArXiv Tool] Executing with params:', params)
 
-      // Build ArXiv search query
-      const searchQuery = this.buildSearchQuery(params.query, params.category)
-      const sortOrder = this.mapSortOrder(params.sort_by)
+      // Build advanced search query
+      const searchQuery = this.buildAdvancedQuery(params)
+      const url = this.buildRequestUrl(searchQuery, params)
 
-      // Construct API URL
-      const url = new URL(this.baseUrl)
-      url.searchParams.set('search_query', searchQuery)
-      url.searchParams.set('start', '0')
-      url.searchParams.set('max_results', params.max_results.toString())
-      url.searchParams.set('sortBy', sortOrder)
-      url.searchParams.set('sortOrder', 'descending')
+      console.error('[Enhanced ArXiv Tool] Request URL:', url.toString())
 
-      console.error('[ArXiv Tool] Fetching from URL:', url.toString())
-
-      // Make API request
+      // Execute API request
       const response = await fetch(url.toString(), {
         headers: {
           'User-Agent': this.userAgent,
@@ -57,61 +50,133 @@ class ArxivQueryTool {
       })
 
       if (!response.ok) {
-        throw new Error(`ArXiv API request failed: ${response.status} ${response.statusText}`)
+        throw new Error(`ArXiv API failed: ${response.status} ${response.statusText}`)
       }
 
       const xmlText = await response.text()
-      const papers = await this.parseArxivResponse(xmlText)
+      const allPapers = await this.parseArxivResponse(xmlText)
       
+      // Apply scoring and filtering
+      const scoredPapers = this.enhanceAndScore(allPapers, params.keywords)
+      const finalPapers = scoredPapers.slice(0, params.max_results)
+
       const result = {
-        papers: papers.slice(0, params.max_results),
-        total_results: papers.length,
-        query: params.query,
-        execution_time: Date.now() - startTime
+        success: true,
+        papers: finalPapers,
+        total_results: finalPapers.length,
+        search_params: {
+          keywords: params.keywords,
+          recent_only: params.recent_only,
+          categories: params.categories,
+          sort_by: params.sort_by,
+          ...(params.recent_only && {
+            date_range: {
+              days_back: params.days_back,
+              start: new Date(Date.now() - params.days_back * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+              end: new Date().toISOString().split('T')[0]
+            }
+          })
+        },
+        execution_time: Date.now() - startTime,
+        debug_info: {
+          original_results: allPapers.length,
+          final_query: searchQuery,
+          xml_length: xmlText.length
+        },
+        api_type: '_arxiv'
       }
 
-      console.error(`[ArXiv Tool] Found ${result.papers.length} papers in ${result.execution_time}ms`)
+      console.error(`[Enhanced ArXiv Tool] Found ${finalPapers.length} papers in ${result.execution_time}ms`)
       return result
 
     } catch (error) {
-      console.error('[ArXiv Tool] Search failed:', error)
-      throw new Error(`ArXiv search failed: ${error instanceof Error ? error.message : 'Unknown error'}`)
+      console.error('[Enhanced ArXiv Tool] Error:', error)
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'ArXiv search failed',
+        execution_time: Date.now() - startTime,
+        api_type: '_arxiv'
+      }
     }
   }
 
-  private buildSearchQuery(query: string, category: string): string {
-    let searchQuery = query
+  private buildAdvancedQuery(params: any): string {
+    // Build keyword query with OR logic
+    const keywordQuery = params.keywords.length > 0 
+      ? params.keywords.map((k: string) => `"${k}"`).join(' OR ')
+      : ''
 
-    // Add category filter if specified
-    if (category && category.trim()) {
-      searchQuery = `cat:${category.trim()} AND (${query})`
+    let searchQuery = keywordQuery ? `(${keywordQuery})` : ''
+
+    // Add category filtering
+    if (params.categories.length > 0) {
+      const categoryFilter = params.categories.map((cat: string) => `cat:${cat}`).join(' OR ')
+      searchQuery = searchQuery 
+        ? `(${searchQuery}) AND (${categoryFilter})`
+        : `(${categoryFilter})`
     }
 
-    // Enhance query for better results
-    searchQuery = searchQuery
-      .replace(/\s+/g, '+')  // Replace spaces with +
-      .replace(/[^\w\s+\-\.\:]/g, '') // Remove special characters except +, -, ., :
+    // Add date filtering for recent papers
+    if (params.recent_only) {
+      const endDate = new Date()
+      const startDate = new Date()
+      startDate.setDate(endDate.getDate() - params.days_back)
 
-    return searchQuery
+      const startDateStr = startDate.toISOString().split('T')[0].replace(/-/g, '')
+      const endDateStr = endDate.toISOString().split('T')[0].replace(/-/g, '')
+
+      searchQuery = `submittedDate:[${startDateStr} TO ${endDateStr}] AND (${searchQuery})`
+    }
+
+    return searchQuery || 'all:*'
   }
 
-  private mapSortOrder(sortBy: string): string {
-    const sortMapping = {
-      'relevance': 'relevance',
-      'lastUpdated': 'lastUpdatedDate', 
-      'submitted': 'submittedDate'
+  private buildRequestUrl(searchQuery: string, params: any): URL {
+    const url = new URL(this.baseUrl)
+    url.searchParams.set('search_query', searchQuery)
+    url.searchParams.set('start', '0')
+    url.searchParams.set('max_results', (params.max_results * 2).toString()) // Get more to filter
+
+    // Set sort order
+    if (params.sort_by === 'date') {
+      url.searchParams.set('sortBy', 'submittedDate')
+      url.searchParams.set('sortOrder', 'descending')
+    } else {
+      url.searchParams.set('sortBy', 'relevance')
+      url.searchParams.set('sortOrder', 'descending')
     }
-    return sortMapping[sortBy as keyof typeof sortMapping] || 'relevance'
+
+    return url
+  }
+
+  private enhanceAndScore(papers: any[], keywords: string[]): any[] {
+    return papers.map(paper => {
+      // Calculate relevance score
+      let score = 0
+      const text = (paper.title + ' ' + paper.summary).toLowerCase()
+
+      keywords.forEach(keyword => {
+        const keywordLower = keyword.toLowerCase()
+        const titleMatches = (paper.title.toLowerCase().match(new RegExp(keywordLower, 'g')) || []).length
+        const summaryMatches = (paper.summary.toLowerCase().match(new RegExp(keywordLower, 'g')) || []).length
+
+        score += titleMatches * 3 + summaryMatches * 1
+      })
+
+      return {
+        ...paper,
+        relevance_score: score,
+        keyword_matches: keywords.filter(k => text.includes(k.toLowerCase())),
+        age_days: Math.floor((Date.now() - new Date(paper.published).getTime()) / (1000 * 60 * 60 * 24))
+      }
+    }).sort((a, b) => b.relevance_score - a.relevance_score)
   }
 
   private async parseArxivResponse(xmlText: string): Promise<any[]> {
     try {
-      // Simple XML parsing for ArXiv Atom feed
       const papers: any[] = []
-      
-      // Extract entries using regex (basic parsing)
       const entryMatches = xmlText.match(/<entry>[\s\S]*?<\/entry>/g) || []
-      
+
       for (const entryXml of entryMatches) {
         try {
           const paper = this.parseEntry(entryXml)
@@ -119,21 +184,19 @@ class ArxivQueryTool {
             papers.push(paper)
           }
         } catch (error) {
-          console.error('[ArXiv Tool] Failed to parse entry:', error)
-          // Continue with other entries
+          console.error('[Enhanced ArXiv Tool] Parse entry error:', error)
         }
       }
 
       return papers
     } catch (error) {
-      console.error('[ArXiv Tool] XML parsing failed:', error)
+      console.error('[Enhanced ArXiv Tool] XML parsing failed:', error)
       throw new Error('Failed to parse ArXiv response')
     }
   }
 
   private parseEntry(entryXml: string): any | null {
     try {
-      // Extract basic fields using regex
       const id = this.extractXmlField(entryXml, 'id')?.replace('http://arxiv.org/abs/', '') || ''
       const title = this.extractXmlField(entryXml, 'title')?.replace(/\s+/g, ' ').trim() || ''
       const summary = this.extractXmlField(entryXml, 'summary')?.replace(/\s+/g, ' ').trim() || ''
@@ -147,18 +210,13 @@ class ArxivQueryTool {
       }))
 
       // Extract categories
-      const categoryMatches = entryXml.match(/term="([^"]+)"/g) || []
-      const categories = categoryMatches.map(match => 
-        match.replace(/term="([^"]+)"/, '$1')
-      )
+      const categoryMatches = entryXml.match(/<category[^>]+term="([^"]+)"/g) || []
+      const categories = categoryMatches.map(match => {
+        const termMatch = match.match(/term="([^"]+)"/)
+        return termMatch ? termMatch[1] : ''
+      }).filter(cat => cat)
 
-      // Build URLs
-      const pdf_url = `http://arxiv.org/pdf/${id}.pdf`
-      const abstract_url = `http://arxiv.org/abs/${id}`
-
-      if (!id || !title) {
-        return null
-      }
+      if (!id || !title) return null
 
       return {
         id,
@@ -168,11 +226,11 @@ class ArxivQueryTool {
         published,
         updated,
         categories,
-        pdf_url,
-        abstract_url
+        pdf_url: `http://arxiv.org/pdf/${id}.pdf`,
+        abstract_url: `http://arxiv.org/abs/${id}`
       }
     } catch (error) {
-      console.error('[ArXiv Tool] Entry parsing error:', error)
+      console.error('[Enhanced ArXiv Tool] Entry parsing error:', error)
       return null
     }
   }
@@ -184,36 +242,18 @@ class ArxivQueryTool {
   }
 }
 
-// Research server configuration
-const SERVER_INFO = {
-  name: 'research-server',
-  version: '1.0.0',
-  description: 'Enterprise Research Assistant MCP Server with ArXiv, Web Scraping, and RAG capabilities'
-}
-
-// Environment variables (read from process.env, not passed via MCP config)
-const config = {
-  arxivEnabled: process.env.ARXIV_API_ENABLED === 'true',
-  braveApiKey: process.env.BRAVE_SEARCH_KEY || process.env.BRAVE_API_KEY,
-  researchMode: process.env.RESEARCH_MODE || 'development',
-  milvusUrl: process.env.MILVUS_URL,
-  memoryNamespace: process.env.MEMORY_NAMESPACE || 'research-assistant'
-}
-
-console.error('[Research Server] Configuration:', config)
-
-// Initialize research tools
-const arxivTool = new ArxivQueryTool()
-
 class ResearchServer {
   private server: Server
   private tools: Map<string, any> = new Map()
 
   constructor() {
-    this.server = new Server(SERVER_INFO, {
+    this.server = new Server({
+      name: 'research-server',
+      version: '2.0.0',
+      description: 'Enhanced Enterprise Research Assistant MCP Server'
+    }, {
       capabilities: {
-        tools: {},
-        resources: {}
+        tools: {}
       }
     })
 
@@ -222,46 +262,58 @@ class ResearchServer {
   }
 
   private setupTools() {
-    // Register ArXiv query tool
-    this.tools.set('arxiv_query', arxivTool)
-    
-    console.error('[Research Server] Registered tools:', Array.from(this.tools.keys()))
+    this.tools.set('arxiv_query', new ArxivTool())
+    console.error('[Research Server] Registered enhanced tools:', Array.from(this.tools.keys()))
   }
 
   private setupHandlers() {
-    // List available research tools
     this.server.setRequestHandler(ListToolsRequestSchema, async (request: ListToolsRequest) => {
-      console.error('[Research Server] Listing tools...')
-      
       const tools: Tool[] = [
         {
           name: 'arxiv_query',
-          description: 'Search and retrieve academic papers from ArXiv repository. Supports keyword search, author lookup, and paper retrieval by ID.',
+          description: 'Enhanced ArXiv search with multiple keywords, categories, date filtering, and intelligent scoring',
           inputSchema: {
             type: 'object',
             properties: {
-              query: {
-                type: 'string',
-                description: 'Search query for ArXiv papers (keywords, authors, titles)'
+              keywords: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Array of keywords to search for (e.g., ["RL", "LLM", "agents"])',
+                minItems: 1
               },
               max_results: {
                 type: 'number',
-                description: 'Maximum number of papers to retrieve (default: 5, max: 20)',
-                default: 5
+                description: 'Maximum papers to retrieve (1-50)',
+                minimum: 1,
+                maximum: 50,
+                default: 10
+              },
+              recent_only: {
+                type: 'boolean',
+                description: 'Filter to recent papers only',
+                default: false
+              },
+              days_back: {
+                type: 'number',
+                description: 'Days back from today when recent_only=true',
+                minimum: 1,
+                maximum: 365,
+                default: 365
+              },
+              categories: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'ArXiv categories (e.g., ["cs.AI", "cs.LG", "cs.CL"])',
+                default: []
               },
               sort_by: {
                 type: 'string',
-                enum: ['relevance', 'lastUpdated', 'submitted'],
-                description: 'Sort papers by relevance, last updated, or submission date',
+                enum: ['relevance', 'date'],
+                description: 'Sort results by relevance or submission date',
                 default: 'relevance'
-              },
-              category: {
-                type: 'string',
-                description: 'ArXiv category filter (e.g., cs.AI, cs.LG, stat.ML)',
-                default: ''
               }
             },
-            required: ['query']
+            required: ['keywords']
           }
         }
       ]
@@ -269,16 +321,13 @@ class ResearchServer {
       return { tools }
     })
 
-    // Execute research tool
     this.server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest) => {
       const { name, arguments: args } = request.params
       
-      console.error(`[Research Server] Executing tool: ${name} with args:`, args)
-
       try {
         const tool = this.tools.get(name)
         if (!tool) {
-          throw new Error(`Unknown research tool: ${name}`)
+          throw new Error(`Unknown tool: ${name}`)
         }
 
         const result = await tool.execute(args)
@@ -292,13 +341,15 @@ class ResearchServer {
           ]
         }
       } catch (error) {
-        console.error(`[Research Server] Tool execution error:`, error)
-        
         return {
           content: [
             {
-              type: 'text', 
-              text: `Error executing ${name}: ${error instanceof Error ? error.message : 'Unknown error'}`
+              type: 'text',
+              text: JSON.stringify({
+                success: false,
+                error: error instanceof Error ? error.message : 'Unknown error',
+                tool_name: name
+              }, null, 2)
             }
           ],
           isError: true
@@ -309,14 +360,11 @@ class ResearchServer {
 
   async start() {
     const transport = new StdioServerTransport()
-    console.error('[Research Server] Starting server...')
-    
     await this.server.connect(transport)
-    console.error('[Research Server] Server started successfully')
+    console.error('[Research Server] Enhanced server started successfully')
   }
 }
 
-// Start the research server
 async function main() {
   try {
     const server = new ResearchServer()
@@ -327,16 +375,8 @@ async function main() {
   }
 }
 
-// Handle graceful shutdown
-process.on('SIGINT', () => {
-  console.error('[Research Server] Shutting down gracefully...')
-  process.exit(0)
-})
-
-process.on('SIGTERM', () => {
-  console.error('[Research Server] Shutting down gracefully...')
-  process.exit(0)
-})
+process.on('SIGINT', () => process.exit(0))
+process.on('SIGTERM', () => process.exit(0))
 
 if (require.main === module) {
   main().catch(console.error)

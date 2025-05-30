@@ -43,6 +43,16 @@ export const DEFAULT_KEYS_STORE: ContextKeys = {
     endpoint: getLocalValue('keys.groq_api_host'),
     proxy: false,
   },
+  vllm: {
+    endpoint: process.env.VLLM_ENDPOINT || 'http://localhost:8694/v1',
+    key: process.env.VLLM_API_KEY || '',
+    proxy: process.env.VLLM_PROXY === 'true'
+  },
+  nvidia: {
+    key: process.env.NVIDIA_API_KEY || '',
+    endpoint: process.env.NVIDIA_ENDPOINT || 'https://integrate.api.nvidia.com/v1',
+    proxy: process.env.NVIDIA_PROXY === 'true'
+  },
   custom: []
 }
 

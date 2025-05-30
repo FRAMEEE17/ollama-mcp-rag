@@ -27,6 +27,7 @@ interface LLMListItem {
 
 const LLMList = computed<LLMListItem[]>(() => {
   return [
+    // Ollama Server - Simple form
     {
       key: 'ollamaServer',
       title: t('settings.ollamaServer'),
@@ -36,6 +37,7 @@ const LLMList = computed<LLMListItem[]>(() => {
         { label: t('global.password'), value: 'ollama.password', type: 'password', placeholder: t('global.optional') }
       ]
     },
+    // OpenAI - Simple form
     {
       key: 'openAi',
       title: t('settings.openAi'),
@@ -45,6 +47,7 @@ const LLMList = computed<LLMListItem[]>(() => {
         { label: t('settings.proxy'), value: 'openai.proxy', type: 'checkbox', placeholder: t('settings.proxyTips') },
       ]
     },
+    // Azure OpenAI - Simple form
     {
       key: 'azureOpenAi',
       title: t('settings.azureOpenAi'),
@@ -55,6 +58,7 @@ const LLMList = computed<LLMListItem[]>(() => {
         { label: t('settings.proxy'), value: 'azureOpenai.proxy', type: 'checkbox', placeholder: t('settings.proxyTips') },
       ]
     },
+    // Anthropic - Simple form
     {
       key: 'anthropic',
       title: t('settings.anthropic'),
@@ -64,6 +68,7 @@ const LLMList = computed<LLMListItem[]>(() => {
         { label: t('settings.proxy'), value: 'anthropic.proxy', type: 'checkbox', placeholder: t('settings.proxyTips') },
       ]
     },
+    // Moonshot - Simple form
     {
       key: 'moonshot',
       title: t('settings.moonshot'),
@@ -72,6 +77,7 @@ const LLMList = computed<LLMListItem[]>(() => {
         { label: t('settings.endpoint'), value: 'moonshot.endpoint', type: 'input', placeholder: t('global.optional'), rule: 'url' },
       ]
     },
+    // Gemini - Simple form
     {
       key: 'gemini',
       title: t('settings.gemini'),
@@ -81,6 +87,7 @@ const LLMList = computed<LLMListItem[]>(() => {
         { label: t('settings.proxy'), value: 'gemini.proxy', type: 'checkbox', placeholder: t('settings.proxyTips') },
       ]
     },
+    // Groq - Simple form
     {
       key: 'groq',
       title: t('settings.groq'),
@@ -90,13 +97,56 @@ const LLMList = computed<LLMListItem[]>(() => {
         { label: t('settings.proxy'), value: 'groq.proxy', type: 'checkbox', placeholder: t('settings.proxyTips') },
       ]
     },
+    // VLLM - Use CustomServerForm (empty fields)
+    {
+      key: 'vllm',
+      title: 'VLLM',
+      fields: []
+    },
+    // NVIDIA - Use CustomServerForm (empty fields)
+    {
+      key: 'nvidia',
+      title: 'Nvidia', 
+      fields: []
+    },
   ]
 })
 
 const currentLLM = ref(LLMList.value[0].key)
 const currentLLMFields = computed(() => LLMList.value.find(el => el.key === currentLLM.value)?.fields || [])
 const state = reactive(getData())
-const currentCustomServer = computed(() => state.custom.find(el => el.name === currentLLM.value))
+
+// Only return custom server data for VLLM, NVIDIA, and actual custom servers
+const currentCustomServer = computed(() => {
+  // Handle VLLM with CustomServerForm
+  if (currentLLM.value === 'vllm') {
+    return {
+      name: 'vllm',
+      aiType: 'vllm' as const,
+      endpoint: state['vllm.endpoint'] || 'http://localhost:8694/v1',
+      key: state['vllm.key'] || '',
+      proxy: state['vllm.proxy'] || false,      
+      models: [],
+      modelsEndpoint: ''
+    }
+  }
+  
+  // Handle NVIDIA with CustomServerForm  
+  if (currentLLM.value === 'nvidia') {
+    return {
+      name: 'nvidia',
+      aiType: 'nvidia' as const,
+      endpoint: state['nvidia.endpoint'] || 'https://integrate.api.nvidia.com/v1',
+      key: state['nvidia.key'] || '',
+      proxy: state['nvidia.proxy'] || false,
+      models: [],
+      modelsEndpoint: ''
+    }
+  }
+  
+  // Handle actual custom servers
+  return state.custom.find(el => el.name === currentLLM.value)
+})
 
 const validate = (data: typeof state) => {
   const errors: Array<{ path: string, message: string } | null> = []
@@ -136,6 +186,7 @@ function onAddCustomServer() {
         key: '',
         models: [],
         proxy: false,
+        modelsEndpoint: undefined,
       }
       state.custom.push(data)
       keysStore.value = Object.assign(keysStore.value, { custom: (keysStore.value.custom || []).concat(data) })
@@ -146,11 +197,48 @@ function onAddCustomServer() {
 }
 
 function onUpdateCustomServer(data: ContextKeys['custom'][number]) {
+  // Handle VLLM updates
+  if (data.name === 'vllm') {
+    state['vllm.endpoint'] = data.endpoint
+    state['vllm.key'] = data.key
+    state['vllm.proxy'] = data.proxy ?? false
+    
+    keysStore.value.vllm = {
+      endpoint: data.endpoint,
+      key: data.key,
+      proxy: data.proxy
+    }
+    
+    loadModels()
+    toast.add({ title: t(`settings.setSuccessfully`), color: 'green' })
+    return
+  }
+  
+  // Handle NVIDIA updates
+  if (data.name === 'nvidia') {
+    state['nvidia.endpoint'] = data.endpoint
+    state['nvidia.key'] = data.key
+    state['nvidia.proxy'] = data.proxy || false
+    
+    keysStore.value.nvidia = {
+      key: data.key,
+      endpoint: data.endpoint,
+      proxy: data.proxy
+    }
+    
+    loadModels()
+    toast.add({ title: t(`settings.setSuccessfully`), color: 'green' })
+    return
+  }
+  
+  // Handle regular custom servers
   const index = state.custom.findIndex(el => el.name === currentCustomServer.value!.name)
-  state.custom[index] = data
-  keysStore.value.custom.splice(index, 1, data)
-  loadModels()
-  toast.add({ title: t(`settings.setSuccessfully`), color: 'green' })
+  if (index >= 0) {
+    state.custom[index] = data
+    keysStore.value.custom.splice(index, 1, data)
+    loadModels()
+    toast.add({ title: t(`settings.setSuccessfully`), color: 'green' })
+  }
 }
 
 function onRemoveCustomServer() {
@@ -165,7 +253,7 @@ const checkHost = (key: keyof typeof state, title: string) => {
   const url = state[key]
   if (!url || (typeof url === 'string' && /^https?:\/\//i.test(url))) return null
 
-  return { path: key, message: t('settings.linkRuleMessage', [title]) }
+  return { path: String(key), message: t('settings.linkRuleMessage', [title]) }
 }
 
 function getData() {
@@ -175,6 +263,17 @@ function getData() {
     })
     return acc
   }, {} as TransformTypes<PathKeys> & Pick<ContextKeys, 'custom'>)
+  
+  // Add VLLM fields manually since it has no fields array
+  data['vllm.endpoint'] = keysStore.value.vllm?.endpoint || 'http://localhost:8694/v1'
+  data['vllm.key'] = keysStore.value.vllm?.key || ''
+  data['vllm.proxy'] = keysStore.value.vllm?.proxy || false
+  
+  // Add NVIDIA fields manually since it has no fields array
+  data['nvidia.endpoint'] = keysStore.value.nvidia?.endpoint || 'https://integrate.api.nvidia.com/v1'
+  data['nvidia.key'] = keysStore.value.nvidia?.key || ''
+  data['nvidia.proxy'] = keysStore.value.nvidia?.proxy || false
+  
   data.custom = deepClone(keysStore.value.custom || [])
   return data
 }
@@ -204,7 +303,6 @@ function recursiveObject(obj: Record<string, any>, cb: (keyPaths: string[], valu
 
   return newObj
 }
-
 </script>
 
 <template>
@@ -228,6 +326,7 @@ function recursiveObject(obj: Record<string, any>, cb: (keyPaths: string[], valu
           </div>
         </template>
         <div>
+          <!-- Simple Form for most services -->
           <UForm v-if="currentLLMFields.length > 0" :validate="validate" :state="state" @submit="onSubmit">
             <template v-for="item in currentLLMFields" :key="item.value">
               <UFormGroup v-if="item.value.endsWith('proxy') ? $config.public.modelProxyEnabled : true" :label="item.label"
@@ -253,10 +352,13 @@ function recursiveObject(obj: Record<string, any>, cb: (keyPaths: string[], valu
               </UButton>
             </div>
           </UForm>
+          
+          <!-- CustomServerForm for VLLM, NVIDIA, and custom servers -->
           <template v-else-if="currentCustomServer">
             <CustomServerForm :value="currentCustomServer"
                               :key="currentLLM"
-                              @update="d => onUpdateCustomServer(d)" @remove="onRemoveCustomServer()" />
+                              @update="d => onUpdateCustomServer(d)" 
+                              @remove="onRemoveCustomServer()" />
           </template>
         </div>
       </SettingsCard>

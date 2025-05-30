@@ -1,5 +1,5 @@
 import { type ModelResponse, type ModelDetails } from 'ollama'
-import { MODEL_FAMILIES, OPENAI_GPT_MODELS, ANTHROPIC_MODELS, AZURE_OPENAI_GPT_MODELS, MOONSHOT_MODELS, GEMINI_MODELS, GROQ_MODELS } from '~/config/index'
+import { MODEL_FAMILIES, OPENAI_GPT_MODELS, ANTHROPIC_MODELS, AZURE_OPENAI_GPT_MODELS, MOONSHOT_MODELS, GEMINI_MODELS, GROQ_MODELS, VLLM_MODELS, NVIDIA_MODELS } from '~/config/index'
 import { getOllama } from '@/server/utils/ollama'
 
 export interface ModelItem extends Partial<Omit<ModelResponse, 'details'>> {
@@ -16,6 +16,49 @@ interface ModelApiResponse {
     // ... other optional fields
   }>
 }
+async function fetchVLLMModels(endpoint: string, apiKey?: string) {
+  try {
+    // Skip if no endpoint configured
+    if (!endpoint || endpoint === 'http://localhost:8694/v1') {
+      console.log('VLLM: Using default endpoint, skipping model fetch (server likely not running)')
+      return []
+    }
+
+    // Skip if no API key and server requires one
+    if (!apiKey || apiKey.trim() === '') {
+      console.log('VLLM: No API key provided, using "EMPTY" for local server')
+      apiKey = 'EMPTY' // VLLM default for local servers
+    }
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json'
+    }
+    
+    // Only add Authorization if we have a real API key
+    if (apiKey && apiKey !== 'EMPTY') {
+      headers['Authorization'] = `Bearer ${apiKey}`
+    }
+
+    const response = await fetch(`${endpoint}/models`, {
+      headers,
+      signal: AbortSignal.timeout(5000) // 5 second timeout
+    })
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+    }
+
+    const data = await response.json()
+    return data.data || []
+    
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error'
+    console.warn(`VLLM models fetch failed:`, message)
+    // Return empty array instead of throwing - this is not critical
+    return []
+  }
+}
+
 
 export default defineEventHandler(async (event) => {
   const keys = event.context.keys
@@ -118,6 +161,135 @@ export default defineEventHandler(async (event) => {
         }
       })
     })
+  }
+
+  // ADD VLLM SUPPORT
+if (keys.vllm.endpoint) {
+  // Skip if using default endpoint and no key (server likely not running)
+  if (keys.vllm.endpoint === 'http://localhost:8694/v1' && !keys.vllm.key) {
+    console.log('VLLM: Using default endpoint without API key, assuming server not running - using static models')
+    VLLM_MODELS.forEach((model) => {
+      models.push({
+        name: model,
+        details: {
+          family: MODEL_FAMILIES.vllm
+        }
+      })
+    })
+  } else {
+    // Try to fetch from actual server
+    try {
+      const headers: Record<string, string> = {}
+      
+      // Handle API key properly
+      if (keys.vllm.key && keys.vllm.key.trim() !== '') {
+        headers['Authorization'] = `Bearer ${keys.vllm.key}`
+      }
+
+      console.log(`Fetching VLLM models from: ${keys.vllm.endpoint}/models`)
+      
+      const response = await fetch(`${keys.vllm.endpoint}/models`, {
+        headers,
+        // Add timeout to prevent hanging
+        signal: AbortSignal.timeout(5000)
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        const vllmModels = data.data || []
+        
+        if (vllmModels.length > 0) {
+          console.log(`VLLM: Found ${vllmModels.length} models`)
+          vllmModels.forEach((model: any) => {
+            models.push({
+              name: model.id || model.name,
+              details: {
+                family: MODEL_FAMILIES.vllm
+              }
+            })
+          })
+        } else {
+          // No models returned, use static fallback
+          console.log('VLLM: No models returned from API, using static models')
+          VLLM_MODELS.forEach((model) => {
+            models.push({
+              name: model,
+              details: {
+                family: MODEL_FAMILIES.vllm
+              }
+            })
+          })
+        }
+      } else {
+        console.warn(`VLLM: API returned ${response.status}, using static models`)
+        // Fallback to static models
+        VLLM_MODELS.forEach((model) => {
+          models.push({
+            name: model,
+            details: {
+              family: MODEL_FAMILIES.vllm
+            }
+          })
+        })
+      }
+    } catch (error) {
+      console.warn('VLLM: Failed to fetch models, using static models:', error instanceof Error ? error.message : 'Unknown error')
+      // Fallback to static models
+      VLLM_MODELS.forEach((model) => {
+        models.push({
+          name: model,
+          details: {
+            family: MODEL_FAMILIES.vllm
+          }
+        })
+      })
+    }
+  }
+}
+
+  // ADD NVIDIA SUPPORT
+  if (keys.nvidia.key) {
+    try {
+      const response = await fetch(`${keys.nvidia.endpoint || 'https://integrate.api.nvidia.com/v1'}/models`, {
+        headers: {
+          'Authorization': `Bearer ${keys.nvidia.key}`,
+        }
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        const nvidiaModels = data.data || []
+        nvidiaModels.forEach((model: any) => {
+          models.push({
+            name: model.id || model.name,
+            details: {
+              family: MODEL_FAMILIES.nvidia
+            }
+          })
+        })
+      } else {
+        // Fallback to static models
+        NVIDIA_MODELS.forEach((model) => {
+          models.push({
+            name: model,
+            details: {
+              family: MODEL_FAMILIES.nvidia
+            }
+          })
+        })
+      }
+    } catch (error) {
+      console.error('Failed to fetch NVIDIA models:', error)
+      // Fallback to static models
+      NVIDIA_MODELS.forEach((model) => {
+        models.push({
+          name: model,
+          details: {
+            family: MODEL_FAMILIES.nvidia
+          }
+        })
+      })
+    }
   }
 
   if (Array.isArray(keys.custom)) {

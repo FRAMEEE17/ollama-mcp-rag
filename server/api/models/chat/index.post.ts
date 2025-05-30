@@ -116,12 +116,12 @@ export default defineEventHandler(async (event) => {
   // Parse request body
   const { knowledgebaseId, model, family, messages, stream } = await readBody<RequestBody>(event)
 
-  // 📚 KNOWLEDGE BASE CHAT PATH
+  // KNOWLEDGE BASE CHAT PATH
   // If knowledgebaseId is provided, use RAG (Retrieval Augmented Generation)
   if (knowledgebaseId) {
     console.log("Chat with knowledge base with id: ", knowledgebaseId)
     
-    // 🔍 Fetch knowledge base from database
+    // Fetch knowledge base from database
     const knowledgebase = await prisma.knowledgeBase.findUnique({
       where: {
         id: knowledgebaseId,
@@ -138,7 +138,7 @@ export default defineEventHandler(async (event) => {
     const embeddings = createEmbeddings(knowledgebase.embedding!, event)
     
     // Create retriever for finding relevant documents
-    const retriever: BaseRetriever = await createRetriever(embeddings, `collection_${knowledgebase.id}`)
+    const retriever = await createRetriever(embeddings, `collection_${knowledgebase.id}`)
 
     // Create chat model
     const chat = createChatModel(model, family, event)
@@ -302,7 +302,9 @@ export default defineEventHandler(async (event) => {
         // Handle different content formats
         if (Array.isArray(content)) {
           content = content
-            .filter(item => item.type === 'text_delta' || item.type === 'text')
+            .filter((item): item is { type: string; text: string } => 
+              (item.type === 'text_delta' || item.type === 'text') && 'text' in item
+            )
             .map(item => item.text)
             .join('')
         }

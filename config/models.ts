@@ -4,7 +4,9 @@ export const MODEL_FAMILIES = {
   anthropic: 'Anthropic',
   moonshot: 'Moonshot',
   gemini: 'Gemini',
-  groq: 'Groq'
+  groq: 'Groq',
+  vllm: 'VLLM',
+  nvidia: 'NVIDIA'
 }
 
 // OpenAI models will be loaded dynamically
@@ -75,4 +77,21 @@ export const GROQ_MODELS = [
   "mixtral-8x7b-32768",
   "gemma-7b-it",
   "gemma2-9b-it",
+]
+
+export const VLLM_MODELS = [
+  'google/gemma-2-2b-it',
+  'google/gemma-2-9b-it', 
+  'google/gemma-2-27b-it',
+  'meta-llama/Llama-2-7b-chat-hf',
+  'meta-llama/Llama-2-13b-chat-hf'
+]
+
+export const NVIDIA_MODELS = [
+  'nvidia/nemotron-4-340b-instruct',
+  'meta/llama-3.1-405b-instruct',
+  'google/gemma-2-27b-it',
+  "nvidia/llama-3.3-nemotron-super-49b-v1",
+  "google/gemma-3-27b-it",
+  "nvidia/llama-3.1-nemotron-ultra-253b-v1"
 ]
