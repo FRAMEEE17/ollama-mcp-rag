@@ -1,3 +1,4 @@
+// server/api/research/agent.post.ts
 import { defineEventHandler, readBody } from 'h3'
 import { createChatModel } from '@/server/utils/models'
 import { McpService } from '@/server/utils/mcp'
@@ -18,29 +19,21 @@ interface ArxivParams {
 
 export default defineEventHandler(async (event) => {
   let family = 'nvidia'; // Default value
+  let model = 'meta/llama-3.1-8b-instruct'; // Default model
+  
   try {
     console.log('[Research Agent] Starting...')
     
-    // 🚀 MODEL SELECTION - Choose your provider:
     const { 
       query, 
       max_results = 10, 
-      
-      // 🌟 NVIDIA API MODELS (Recommended - No GPU needed!)
-      model = 'meta/llama-3.1-8b-instruct',  // Fast and capable
-      // model = 'meta/llama-3.1-70b-instruct', // More powerful
-      // model = 'nvidia/llama-3.1-nemotron-70b-instruct', // NVIDIA's optimized
-      // model = 'mistralai/mixtral-8x7b-instruct-v0.1', // Alternative
-      family = 'nvidia'  // Use NVIDIA API
-      
-      // 🖥️ VLLM LOCAL MODELS (Requires local VLLM server + GPU)
-      // model = 'microsoft/DialoGPT-medium',     // Small test model
-      // model = 'Qwen/Qwen2.5-7B-Instruct',     // Good for research
-      // model = 'meta-llama/Llama-3.1-8B-Instruct', // Powerful option
-      // model = 'mistralai/Mixtral-8x7B-Instruct-v0.1', // MoE model
-      // family = 'vllm'  // Use local VLLM server
-      
+      model: requestModel = 'meta/llama-3.1-8b-instruct',
+      family: requestFamily = 'nvidia'
     }: RequestBody = await readBody(event)
+    
+    // Update the variables with request values
+    model = requestModel;
+    family = requestFamily;
     
     if (!query) {
       throw new Error('Research query is required')
@@ -48,12 +41,44 @@ export default defineEventHandler(async (event) => {
 
     console.log(`[Research Agent] Using ${family.toUpperCase()} ${family === 'nvidia' ? 'API' : 'Server'} with ${model}`)
     console.log(`[Research Agent] Query: "${query}"`)
+    
+    // **FIX: Check if NVIDIA API key is available**
+    if (family === 'nvidia') {
+      const keys = event.context.keys;
+      if (!keys?.nvidia?.key) {
+        throw new Error('NVIDIA API key not configured. Please set your NVIDIA API key in settings.');
+      }
+      console.log('[Research Agent] NVIDIA API key found ✅');
+    }
+    
+    // **FIX: Check if VLLM server is available**
+    if (family === 'vllm') {
+      const keys = event.context.keys;
+      console.log('[Research Agent] VLLM endpoint:', keys?.vllm?.endpoint);
+      
+      // Test VLLM connection
+      try {
+        const testUrl = `${keys?.vllm?.endpoint || 'http://localhost:8694/v1'}/models`;
+        const response = await fetch(testUrl, { 
+          signal: AbortSignal.timeout(5000) 
+        });
+        if (!response.ok) {
+          throw new Error(`VLLM server not accessible at ${testUrl}`);
+        }
+        console.log('[Research Agent] VLLM server accessible ✅');
+      } catch (vllmError) {
+        const errorMessage = vllmError instanceof Error ? vllmError.message : 'Unknown error';
+        throw new Error(`VLLM server connection failed: ${errorMessage}`);
+      }
+    }
+    
     const startTime = Date.now()
 
     // Create LLM instance (supports both NVIDIA API and VLLM local server)
+    console.log(`[Research Agent] Creating ${family} model: ${model}`);
     const llm = createChatModel(model, family, event)
     
-    // Extract search parameters using LLM (works with both NVIDIA API & VLLM)
+    // Extract search parameters using LLM
     const extractionPrompt = `
 You are a research assistant. Extract optimal ArXiv search parameters from this query.
 
@@ -114,9 +139,9 @@ JSON:
 
       console.log('[Research Agent] 🔍 Executing ArXiv search via MCP...')
       const searchResult = await arxivTool.invoke(searchParams)
-      console.log('[Research Agent] ✅ Search completed, found papers')
+      console.log('[Research Agent] ✅ Search completed')
 
-      // Prompt (not finished)
+      // Generate summary
       const summaryPrompt = `
 You are an expert research analyst. Analyze these ArXiv papers and create a comprehensive research summary.
 
