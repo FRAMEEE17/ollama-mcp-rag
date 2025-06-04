@@ -45,7 +45,7 @@ interface ToolCallResult {
   [key: string]: any
 }
 
-// 🚀 MCP Connection Pool for Ultra Performance
+// MCP Connection Pool for Ultra Performance
 class McpConnectionPool {
   private static instance: McpConnectionPool
   private mcpService: McpService | null = null
@@ -94,7 +94,7 @@ class McpConnectionPool {
       this.isInitialized = true
       this.lastHealthCheck = Date.now()
       
-      console.log(`[MCP Pool] ✅ Initialized with ${this.tools.length} tools:`, this.tools.map(t => t.name))
+      console.log(`[MCP Pool] Initialized with ${this.tools.length} tools:`, this.tools.map(t => t.name))
     } catch (error) {
       console.error('[MCP Pool] ❌ Initialization failed:', error)
       this.isInitialized = false
@@ -123,7 +123,7 @@ class McpConnectionPool {
       throw new Error(`Tool ${toolName} not found in available tools: ${Object.keys(this.toolsMap).join(', ')}`)
     }
     
-    console.log(`[MCP Pool] 🔧 Executing tool: ${toolName} with args:`, args)
+    console.log(`[MCP Pool] Executing tool: ${toolName} with args:`, args)
     const result = await tool.invoke(args)
     console.log(`[MCP Pool] ✅ Tool ${toolName} completed`)
     return result
@@ -215,17 +215,25 @@ const transformMessages = (messages: RequestBody['messages']): BaseMessageLike[]
       return message.content && (message.content as string).trim() !== ''
     })
     .map((message) => {
+      // Extract content properly
+      let content = ''
       if (Array.isArray(message.content)) {
         // Handle multimodal content (text + images)
-        const textContent = message.content
+        content = message.content
           .filter(part => part.type === 'text' && part.text)
           .map(part => part.text)
           .join(' ')
-        
-        return [message.role, textContent || 'No text content']
+      } else {
+        content = (message.content as string) || ''
       }
-      // Handle simple text content
-      return [message.role, (message.content as string).trim()]
+
+      // Ensure we have content
+      if (!content.trim()) {
+        console.warn('[Transform] Empty content for message role:', message.role)
+        content = 'No content provided' // Fallback content
+      }
+
+      return [message.role, content.trim()]
     })
 }
 
@@ -275,7 +283,6 @@ const generateToolCallId = (toolName?: string): string => {
   return `${toolName || 'tool'}_${timestamp}_${random}`
 }
 
-// Extract user query from message content
 const extractUserQuery = (content: string | MessageContent[]): string => {
   if (Array.isArray(content)) {
     return content
@@ -283,7 +290,7 @@ const extractUserQuery = (content: string | MessageContent[]): string => {
       .map(part => part.text)
       .join(' ')
   }
-  return content as string
+  return content as string || ''  // Ensure we return a string even if content is falsy
 }
 
 // Check if model supports tool binding
@@ -292,7 +299,7 @@ const modelSupportsTools = (family: string): boolean => {
   return supportedFamilies.includes(family.toLowerCase())
 }
 
-// Manual tool calling for models that don't support tool binding
+// Manual tool calling for models that don't support tool binding - FIXED VERSION
 const handleManualToolCalling = async (
   userMessage: string, 
   toolsMap: Record<string, StructuredToolInterface>,
@@ -300,6 +307,12 @@ const handleManualToolCalling = async (
 ): Promise<string | null> => {
   
   console.log("[Manual Tool] 🔍 Analyzing message:", userMessage)
+  
+  // Ensure we have a valid message
+  if (!userMessage || userMessage.trim() === '') {
+    console.log("[Manual Tool] ❌ Empty user message received")
+    return null
+  }
   
   // Research/ArXiv keywords (more comprehensive)
   const researchKeywords = [
@@ -311,12 +324,12 @@ const handleManualToolCalling = async (
     userMessage.toLowerCase().includes(keyword.toLowerCase())
   )
   
-  console.log("[Manual Tool] 🎯 Is research query:", isResearchQuery)
-  console.log("[Manual Tool] 🛠️ Available tools:", Object.keys(toolsMap))
+  console.log("[Manual Tool] Is research query:", isResearchQuery)
+  console.log("[Manual Tool] Available tools:", Object.keys(toolsMap))
   
   if (isResearchQuery && toolsMap['arxiv_query']) {
     try {
-      console.log('[Manual Tool] 🔍 Detected research query, using ArXiv tool')
+      console.log('[Manual Tool] Detected research query, using ArXiv tool')
       
       // Extract search terms from user message
       let searchQuery = userMessage
@@ -330,10 +343,11 @@ const handleManualToolCalling = async (
         searchQuery = userMessage
       }
       
-      console.log('[Manual Tool] 🔍 Final search query:', searchQuery)
+      console.log('[Manual Tool] Final search query:', searchQuery)
       
+      // Use keywords format that the research server expects
       const arxivResult = await mcpPool.executeTool('arxiv_query', { 
-        query: searchQuery,
+        keywords: [searchQuery],  // Note: using keywords array instead of query string
         max_results: 5
       })
       
@@ -347,9 +361,6 @@ const handleManualToolCalling = async (
   }
   
   console.log("[Manual Tool] ❌ No matching tools found")
-  
-  // Add more manual tool handlers here for other tools
-  
   return null // No manual tool calling needed
 }
 
@@ -358,11 +369,11 @@ export default defineEventHandler(async (event) => {
   // Parse request body
   const { knowledgebaseId, model, family, messages, stream } = await readBody<RequestBody>(event)
 
-  console.log(`[Chat] 🚀 Starting chat with model: ${family}/${model}, streaming: ${!!stream}`)
+  console.log(`[Chat] Starting chat with model: ${family}/${model}, streaming: ${!!stream}`)
 
   // KNOWLEDGE BASE CHAT PATH
   if (knowledgebaseId) {
-    console.log("[RAG] 📚 Chat with knowledge base ID:", knowledgebaseId)
+    console.log("[RAG] Chat with knowledge base ID:", knowledgebaseId)
     
     // Fetch knowledge base from database
     const knowledgebase = await prisma.knowledgeBase.findUnique({
@@ -534,12 +545,13 @@ export default defineEventHandler(async (event) => {
         
         // Handle automatic tool calls (for models that support tool binding)
         if (response.tool_calls && Array.isArray(response.tool_calls) && response.tool_calls.length > 0) {
-          console.log("[Chat] 🔧 Processing", response.tool_calls.length, "tool calls:", response.tool_calls.map(tc => tc.name))
+          const toolCalls = response.tool_calls || []
+          console.log("[Chat] 🔧 Processing", toolCalls.length, "tool calls:", toolCalls.map(tc => tc.name))
           
           // 🚀 ULTRA OPTIMIZATION: Execute all tools in parallel
-          const toolPromises = response.tool_calls.map(async (toolCall, index) => {
+          const toolPromises = toolCalls.map(async (toolCall, index) => {
             try {
-              console.log(`[Chat] 🔧 Executing tool ${index + 1}/${response.tool_calls.length}: ${toolCall.name}`)
+              console.log(`[Chat] 🔧 Executing tool ${index + 1}/${toolCalls.length}: ${toolCall.name}`)
               
               const toolCallId = toolCall.id || generateToolCallId(toolCall.name)
               
