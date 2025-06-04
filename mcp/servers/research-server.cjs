@@ -5,9 +5,9 @@ const index_js_1 = require("@modelcontextprotocol/sdk/server/index.js");
 const stdio_js_1 = require("@modelcontextprotocol/sdk/server/stdio.js");
 const types_js_1 = require("@modelcontextprotocol/sdk/types.js");
 class ArxivTool {
-    baseUrl = 'http://export.arxiv.org/api/query';
-    userAgent = 'Enterprise-Research-Assistant/1.0';
     constructor() {
+        this.baseUrl = 'http://export.arxiv.org/api/query';
+        this.userAgent = 'Enterprise-Research-Assistant/1.0';
         console.error('[Enhanced ArXiv Tool] Initialized');
     }
     async execute(args) {
@@ -164,9 +164,13 @@ class ArxivTool {
     }
     parseEntry(entryXml) {
         try {
-            const id = this.extractXmlField(entryXml, 'id')?.replace('http://arxiv.org/abs/', '') || '';
-            const title = this.extractXmlField(entryXml, 'title')?.replace(/\s+/g, ' ').trim() || '';
-            const summary = this.extractXmlField(entryXml, 'summary')?.replace(/\s+/g, ' ').trim() || '';
+            // Fixed: Remove optional chaining that was causing syntax errors
+            const idField = this.extractXmlField(entryXml, 'id');
+            const id = idField ? idField.replace('http://arxiv.org/abs/', '') : '';
+            const titleField = this.extractXmlField(entryXml, 'title');
+            const title = titleField ? titleField.replace(/\s+/g, ' ').trim() : '';
+            const summaryField = this.extractXmlField(entryXml, 'summary');
+            const summary = summaryField ? summaryField.replace(/\s+/g, ' ').trim() : '';
             const published = this.extractXmlField(entryXml, 'published') || '';
             const updated = this.extractXmlField(entryXml, 'updated') || '';
             // Extract authors
@@ -206,9 +210,8 @@ class ArxivTool {
     }
 }
 class ResearchServer {
-    server;
-    tools = new Map();
     constructor() {
+        this.tools = new Map();
         this.server = new index_js_1.Server({
             name: 'research-server',
             version: '2.0.0',

@@ -197,9 +197,16 @@ class ArxivTool {
 
   private parseEntry(entryXml: string): any | null {
     try {
-      const id = this.extractXmlField(entryXml, 'id')?.replace('http://arxiv.org/abs/', '') || ''
-      const title = this.extractXmlField(entryXml, 'title')?.replace(/\s+/g, ' ').trim() || ''
-      const summary = this.extractXmlField(entryXml, 'summary')?.replace(/\s+/g, ' ').trim() || ''
+      // Fixed: Remove optional chaining that was causing syntax errors
+      const idField = this.extractXmlField(entryXml, 'id')
+      const id = idField ? idField.replace('http://arxiv.org/abs/', '') : ''
+      
+      const titleField = this.extractXmlField(entryXml, 'title')
+      const title = titleField ? titleField.replace(/\s+/g, ' ').trim() : ''
+      
+      const summaryField = this.extractXmlField(entryXml, 'summary')
+      const summary = summaryField ? summaryField.replace(/\s+/g, ' ').trim() : ''
+      
       const published = this.extractXmlField(entryXml, 'published') || ''
       const updated = this.extractXmlField(entryXml, 'updated') || ''
 
