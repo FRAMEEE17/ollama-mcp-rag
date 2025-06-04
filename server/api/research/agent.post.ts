@@ -1,7 +1,5 @@
-// server/api/research/agent.post.ts
 import { defineEventHandler, readBody } from 'h3'
 import { createChatModel } from '@/server/utils/models'
-import { McpService } from '@/server/utils/mcp'
 
 interface RequestBody {
   query: string
@@ -80,20 +78,24 @@ export default defineEventHandler(async (event) => {
     
     // Extract search parameters using LLM
     const extractionPrompt = `
-You are a research assistant. Extract optimal ArXiv search parameters from this query.
+    You are a research assistant. Extract ArXiv search parameters from this query.
 
-Query: "${query}"
+    Query: "${query}"
 
-Return ONLY valid JSON with these fields:
-- query: optimized search terms for ArXiv (use AND, OR, quotes for phrases)
-- max_results: number between 5-20
-- sort_by: "relevance" or "lastUpdatedDate"
-- categories: relevant arXiv categories (cs.AI, cs.LG, cs.CV, etc.)
+    IMPORTANT: ArXiv search works best with SIMPLE terms, not complex Boolean queries.
 
-Example: {"query": "machine learning AND computer vision", "max_results": 10, "sort_by": "relevance", "categories": ["cs.AI", "cs.CV"]}
+    Return ONLY valid JSON with these fields:
+    - query: ONE simple search phrase (NO AND/OR operators, NO parentheses)
+    - max_results: number between 5-20  
+    - sort_by: "relevance" or "date"
 
-JSON:
-`
+    Examples:
+    - For "machine learning papers": {"query": "machine learning", "max_results": 10, "sort_by": "relevance"}
+    - For "neural networks and vision": {"query": "neural networks", "max_results": 10, "sort_by": "relevance"}
+    - For "deep learning research": {"query": "deep learning", "max_results": 10, "sort_by": "relevance"}
+
+    JSON:
+    `
 
     console.log(`[Research Agent] 🧠 Extracting parameters with ${family.toUpperCase()}...`)
     const extractionResponse = await llm.invoke([['human', extractionPrompt]])
@@ -102,47 +104,88 @@ JSON:
     // Parse LLM response (works for both NVIDIA API & VLLM)
     let searchParams: ArxivParams
     try {
-      const content = extractionResponse.content as string
-      // Extract JSON from response
-      const jsonMatch = content.match(/\{[\s\S]*?\}/)
-      if (jsonMatch) {
+    const content = extractionResponse.content as string
+    const jsonMatch = content.match(/\{[\s\S]*?\}/)
+    if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0])
-        searchParams = {
-          query: parsed.query || query,
-          max_results: Math.min(Math.max(parsed.max_results || max_results, 5), 20),
-          sort_by: parsed.sort_by || 'relevance',
-          sort_order: 'descending'
+        
+        // FIXED: Clean up the query - remove complex operators
+        let cleanQuery = parsed.query || query
+        cleanQuery = cleanQuery
+        .replace(/\s+AND\s+/gi, ' ')  // Remove AND operators
+        .replace(/\s+OR\s+/gi, ' ')   // Remove OR operators
+        .replace(/[()]/g, '')         // Remove parentheses
+        .replace(/"/g, '')            // Remove quotes
+        .replace(/\s+/g, ' ')         // Normalize spaces
+        .trim()
+        
+        // Take only first 2-3 meaningful words
+        interface QueryWord {
+          length: number;
+          toLowerCase(): string;
         }
-        console.log('[Research Agent] ✅ Parsed search params:', searchParams)
-      } else {
+        
+        const words: string[] = cleanQuery.split(' ').filter((word: QueryWord) => 
+          word.length > 2 && !['the', 'and', 'for', 'with'].includes(word.toLowerCase())
+        )
+        cleanQuery = words.slice(0, 3).join(' ')
+        
+        searchParams = {
+        query: cleanQuery,  // Use cleaned query instead of parsed.query
+        max_results: Math.min(Math.max(parsed.max_results || max_results, 5), 20),
+        sort_by: parsed.sort_by || 'relevance',
+        sort_order: 'descending'
+        }
+        console.log('[Research Agent] ✅ Cleaned search params:', searchParams)
+    } else {
         throw new Error(`No JSON found in ${family.toUpperCase()} response`)
-      }
+    }
     } catch (parseError) {
-      console.log('[Research Agent] ⚠️ JSON parse failed, using fallback params')
-      searchParams = {
-        query: query,
+    console.log('[Research Agent] ⚠️ JSON parse failed, using fallback params')
+    // Use simple fallback - just first 2 words of original query
+    const simpleQuery = query.split(' ').slice(0, 2).join(' ')
+    searchParams = {
+        query: simpleQuery,  // Simple fallback query
         max_results: Math.min(max_results, 15),
         sort_by: 'relevance', 
         sort_order: 'descending'
-      }
+    }
     }
 
-    // Execute ArXiv search via MCP
-    const mcpService = new McpService()
-    try {
-      const tools = await mcpService.listTools()
-      const arxivTool = tools.find(t => t.name === 'arxiv_query')
-      
-      if (!arxivTool) {
-        throw new Error('ArXiv MCP tool not available. Please ensure MCP server is running.')
-      }
+    // Execute ArXiv search via direct API (bypassing MCP)
+    console.log('[Research Agent] 🔍 Executing ArXiv search via direct API...')
 
-      console.log('[Research Agent] 🔍 Executing ArXiv search via MCP...')
-      const searchResult = await arxivTool.invoke(searchParams)
-      console.log('[Research Agent] ✅ Search completed')
+    const arxivResponse = await fetch('http://localhost:3000/api/research/arxiv', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        keywords: [searchParams.query],
+        max_results: searchParams.max_results,
+        sort_by: searchParams.sort_by
+      })
+    })
 
-      // Generate summary
-      const summaryPrompt = `
+    if (!arxivResponse.ok) {
+      throw new Error(`ArXiv API failed: ${arxivResponse.status}`)
+    }
+
+    const searchResultRaw = await arxivResponse.json()
+
+    if (!searchResultRaw.success) {
+      throw new Error(searchResultRaw.error || 'ArXiv search failed')
+    }
+
+    // Format the result to match what the summary expects
+    const searchResult = {
+      content: JSON.stringify(searchResultRaw.papers, null, 2)
+    }
+
+    console.log('[Research Agent] ✅ Search completed')
+
+    // Generate summary
+    const summaryPrompt = `
 You are an expert research analyst. Analyze these ArXiv papers and create a comprehensive research summary.
 
 RESEARCH PAPERS DATA:
@@ -183,28 +226,23 @@ For the 3-5 most important papers:
 Keep the analysis concise but insightful for both researchers and practitioners.
 `
 
-      console.log(`[Research Agent] 🧠 Generating comprehensive summary with ${family.toUpperCase()}...`)
-      const summaryResponse = await llm.invoke([['human', summaryPrompt]])
+    console.log(`[Research Agent] 🧠 Generating comprehensive summary with ${family.toUpperCase()}...`)
+    const summaryResponse = await llm.invoke([['human', summaryPrompt]])
       
-      const executionTime = Date.now() - startTime
-      console.log(`[Research Agent] ✅ Research completed in ${executionTime}ms using ${family.toUpperCase()} ${model}`)
+    const executionTime = Date.now() - startTime
+    console.log(`[Research Agent] ✅ Research completed in ${executionTime}ms using ${family.toUpperCase()} ${model}`)
 
-      return {
-        success: true,
-        query: searchParams.query,
-        model_used: `${family}/${model}`,
-        papers: searchResult.content,
-        summary: summaryResponse.content,
-        execution_time: executionTime,
-        search_params: searchParams,
-        papers_found: searchParams.max_results,
-        provider: family === 'nvidia' ? 'NVIDIA API (Cloud)' : 'VLLM (Local Server)',
-        cost_estimate: family === 'nvidia' ? 'Pay-per-token pricing' : 'Local compute only'
-      }
-
-    } finally {
-      // Always cleanup MCP service
-      await mcpService.close()
+    return {
+      success: true,
+      query: searchParams.query,
+      model_used: `${family}/${model}`,
+      papers: searchResult.content,
+      summary: summaryResponse.content,
+      execution_time: executionTime,
+      search_params: searchParams,
+      papers_found: searchParams.max_results,
+      provider: family === 'nvidia' ? 'NVIDIA API (Cloud)' : 'VLLM (Local Server)',
+      cost_estimate: family === 'nvidia' ? 'Pay-per-token pricing' : 'Local compute only'
     }
 
   } catch (error) {
@@ -220,7 +258,7 @@ Keep the analysis concise but insightful for both researchers and practitioners.
       troubleshooting: {
         nvidia_issues: family === 'nvidia' ? 'Ensure NVIDIA API key is set in settings' : 'N/A',
         vllm_issues: family === 'vllm' ? 'Check VLLM server is running and accessible' : 'N/A', 
-        mcp_check: 'Verify MCP ArXiv server is running',
+        mcp_check: 'Direct ArXiv API used (MCP bypassed)',
         model_check: 'Confirm model is available on selected provider'
       }
     }

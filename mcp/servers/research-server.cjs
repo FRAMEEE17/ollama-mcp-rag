@@ -68,11 +68,11 @@ class ArxivTool {
                 },
                 api_type: '_arxiv'
             };
-            console.error(`[Enhanced ArXiv Tool] Found ${finalPapers.length} papers in ${result.execution_time}ms`);
+            console.error(`[ArXiv Tool] Found ${finalPapers.length} papers in ${result.execution_time}ms`);
             return result;
         }
         catch (error) {
-            console.error('[Enhanced ArXiv Tool] Error:', error);
+            console.error('[ArXiv Tool] Error:', error);
             return {
                 success: false,
                 error: error instanceof Error ? error.message : 'ArXiv search failed',
@@ -152,13 +152,13 @@ class ArxivTool {
                     }
                 }
                 catch (error) {
-                    console.error('[Enhanced ArXiv Tool] Parse entry error:', error);
+                    console.error('[ ArXiv Tool] Parse entry error:', error);
                 }
             }
             return papers;
         }
         catch (error) {
-            console.error('[Enhanced ArXiv Tool] XML parsing failed:', error);
+            console.error('[ArXiv Tool] XML parsing failed:', error);
             throw new Error('Failed to parse ArXiv response');
         }
     }
@@ -211,7 +211,7 @@ class ResearchServer {
         this.server = new index_js_1.Server({
             name: 'research-server',
             version: '2.0.0',
-            description: 'Enhanced Enterprise Research Assistant MCP Server'
+            description: 'Enterprise Research Assistant MCP Server'
         }, {
             capabilities: {
                 tools: {}
@@ -229,7 +229,7 @@ class ResearchServer {
             const tools = [
                 {
                     name: 'arxiv_query',
-                    description: 'Enhanced ArXiv search with multiple keywords, categories, date filtering, and intelligent scoring',
+                    description: ' ArXiv search with multiple keywords, categories, date filtering, and intelligent scoring',
                     inputSchema: {
                         type: 'object',
                         properties: {
@@ -314,7 +314,7 @@ class ResearchServer {
     async start() {
         const transport = new stdio_js_1.StdioServerTransport();
         await this.server.connect(transport);
-        console.error('[Research Server] Enhanced server started successfully');
+        console.error('[Research Server] server started successfully');
     }
 }
 async function main() {
