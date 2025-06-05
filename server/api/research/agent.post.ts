@@ -22,19 +22,35 @@ export default defineEventHandler(async (event) => {
   try {
     console.log('[Research Agent] Starting...')
     
+    // **FIX: Better error handling for readBody**
+    let requestBody
+    try {
+      requestBody = await readBody(event)
+      console.log('[Research Agent] Raw request body:', requestBody)
+      console.log('[Research Agent] Request body type:', typeof requestBody)
+    } catch (readError) {
+      console.error('[Research Agent] Failed to read body:', readError)
+      throw new Error('Failed to read request body: ' + (readError instanceof Error ? readError.message : 'Unknown error'))
+    }
+    
+    if (!requestBody || typeof requestBody !== 'object') {
+      console.error('[Research Agent] Invalid body received:', requestBody)
+      throw new Error('Invalid request body - expected JSON object, got: ' + typeof requestBody)
+    }
+    
     const { 
       query, 
       max_results = 10, 
       model: requestModel = 'meta/llama-3.1-8b-instruct',
       family: requestFamily = 'nvidia'
-    }: RequestBody = await readBody(event)
+    }: RequestBody = requestBody
     
     // Update the variables with request values
     model = requestModel;
     family = requestFamily;
     
-    if (!query) {
-      throw new Error('Research query is required')
+    if (!query || typeof query !== 'string' || query.trim() === '') {
+      throw new Error('Research query is required and must be a non-empty string')
     }
 
     console.log(`[Research Agent] Using ${family.toUpperCase()} ${family === 'nvidia' ? 'API' : 'Server'} with ${model}`)
@@ -76,6 +92,9 @@ export default defineEventHandler(async (event) => {
     console.log(`[Research Agent] Creating ${family} model: ${model}`);
     const llm = createChatModel(model, family, event)
     
+    // Set timeout for LLM calls
+    const LLM_TIMEOUT = 30000 // 30 seconds
+    
     // Extract search parameters using LLM
     const extractionPrompt = `
     You are a research assistant. Extract ArXiv search parameters from this query.
@@ -98,26 +117,38 @@ export default defineEventHandler(async (event) => {
     `
 
     console.log(`[Research Agent] 🧠 Extracting parameters with ${family.toUpperCase()}...`)
-    const extractionResponse = await llm.invoke([['human', extractionPrompt]])
+    
+    // **FIX: Proper message format for LLM with timeout**
+    const extractionMessages = [
+      { role: 'human', content: extractionPrompt }
+    ]
+    
+    // Add timeout to LLM call
+    const extractionResponse = await Promise.race([
+      llm.invoke(extractionMessages),
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('LLM extraction timeout')), LLM_TIMEOUT)
+      )
+    ]) as any
     console.log('[Research Agent] LLM Response:', extractionResponse.content)
     
     // Parse LLM response (works for both NVIDIA API & VLLM)
     let searchParams: ArxivParams
     try {
-    const content = extractionResponse.content as string
-    const jsonMatch = content.match(/\{[\s\S]*?\}/)
-    if (jsonMatch) {
+      const content = extractionResponse.content as string
+      const jsonMatch = content.match(/\{[\s\S]*?\}/)
+      if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0])
         
         // FIXED: Clean up the query - remove complex operators
         let cleanQuery = parsed.query || query
         cleanQuery = cleanQuery
-        .replace(/\s+AND\s+/gi, ' ')  // Remove AND operators
-        .replace(/\s+OR\s+/gi, ' ')   // Remove OR operators
-        .replace(/[()]/g, '')         // Remove parentheses
-        .replace(/"/g, '')            // Remove quotes
-        .replace(/\s+/g, ' ')         // Normalize spaces
-        .trim()
+          .replace(/\s+AND\s+/gi, ' ')  // Remove AND operators
+          .replace(/\s+OR\s+/gi, ' ')   // Remove OR operators
+          .replace(/[()]/g, '')         // Remove parentheses
+          .replace(/"/g, '')            // Remove quotes
+          .replace(/\s+/g, ' ')         // Normalize spaces
+          .trim()
         
         // Take only first 2-3 meaningful words
         interface QueryWord {
@@ -131,25 +162,25 @@ export default defineEventHandler(async (event) => {
         cleanQuery = words.slice(0, 3).join(' ')
         
         searchParams = {
-        query: cleanQuery,  // Use cleaned query instead of parsed.query
-        max_results: Math.min(Math.max(parsed.max_results || max_results, 5), 20),
-        sort_by: parsed.sort_by || 'relevance',
-        sort_order: 'descending'
+          query: cleanQuery,  // Use cleaned query instead of parsed.query
+          max_results: Math.min(Math.max(parsed.max_results || max_results, 5), 20),
+          sort_by: parsed.sort_by || 'relevance',
+          sort_order: 'descending'
         }
         console.log('[Research Agent] ✅ Cleaned search params:', searchParams)
-    } else {
+      } else {
         throw new Error(`No JSON found in ${family.toUpperCase()} response`)
-    }
+      }
     } catch (parseError) {
-    console.log('[Research Agent] ⚠️ JSON parse failed, using fallback params')
-    // Use simple fallback - just first 2 words of original query
-    const simpleQuery = query.split(' ').slice(0, 2).join(' ')
-    searchParams = {
+      console.log('[Research Agent] ⚠️ JSON parse failed, using fallback params')
+      // Use simple fallback - just first 2 words of original query
+      const simpleQuery = query.split(' ').slice(0, 2).join(' ')
+      searchParams = {
         query: simpleQuery,  // Simple fallback query
         max_results: Math.min(max_results, 15),
         sort_by: 'relevance', 
         sort_order: 'descending'
-    }
+      }
     }
 
     // Execute ArXiv search via direct API (bypassing MCP)
@@ -227,7 +258,19 @@ Keep the analysis concise but insightful for both researchers and practitioners.
 `
 
     console.log(`[Research Agent] 🧠 Generating comprehensive summary with ${family.toUpperCase()}...`)
-    const summaryResponse = await llm.invoke([['human', summaryPrompt]])
+    
+    // **FIX: Proper message format for summary with timeout**
+    const summaryMessages = [
+      { role: 'human', content: summaryPrompt }
+    ]
+    
+    // Add timeout to summary generation
+    const summaryResponse = await Promise.race([
+      llm.invoke(summaryMessages),
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('LLM summary timeout')), LLM_TIMEOUT)
+      )
+    ]) as any
       
     const executionTime = Date.now() - startTime
     console.log(`[Research Agent] ✅ Research completed in ${executionTime}ms using ${family.toUpperCase()} ${model}`)

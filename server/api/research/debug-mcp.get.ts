@@ -1,5 +1,3 @@
-// server/api/research/debug-mcp.get.ts
-
 import { defineEventHandler } from 'h3'
 import { McpService } from '@/server/utils/mcp'
 

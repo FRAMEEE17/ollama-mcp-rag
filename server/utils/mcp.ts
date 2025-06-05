@@ -61,6 +61,7 @@ export class McpService {
     }
   }
 
+  // Fixed MCP service initialization
   private async initializeTools(): Promise<StructuredToolInterface[]> {
     const mcpConfigPath = this.getMcpConfigPath()
     
@@ -77,33 +78,20 @@ export class McpService {
         await this.mcpClient.close()
       }
 
-      // Check if config format is correct
+      // **FIX: Don't convert the config format - keep mcpServers as is**
       const configContent = fs.readFileSync(mcpConfigPath, 'utf8')
       const config = JSON.parse(configContent)
       
-      // Validate config structure
-      if (!config.servers && config.mcpServers) {
-        console.log("Converting legacy mcpServers format to servers format...")
-        // Convert legacy format on the fly
-        const convertedConfig: McpConfig = {
-          servers: {} as Record<string, McpServerConfig>
-        }
-        
-        for (const [name, serverConfig] of Object.entries(config.mcpServers as Record<string, any>)) {
-          convertedConfig.servers[name] = {
-            ...serverConfig,
-            transport: serverConfig.transport || 'stdio' // Default to stdio if not specified
-          }
-        }
-        
-        // Save the converted config
-        fs.writeFileSync(mcpConfigPath, JSON.stringify(convertedConfig, null, 2))
-        console.log("✅ Config file converted to new format")
-      } else if (!config.servers) {
-        console.error("Invalid MCP config: missing 'servers' property")
+      // Validate config structure - KEEP mcpServers format
+      if (!config.mcpServers) {
+        console.error("Invalid MCP config: missing 'mcpServers' property")
+        console.log("Current config structure:", Object.keys(config))
         return []
       }
       
+      console.log("Found MCP servers:", Object.keys(config.mcpServers))
+      
+      // Use the config file directly without conversion
       this.mcpClient = MultiServerMCPClient.fromConfigFile(mcpConfigPath)
       await this.mcpClient.initializeConnections()
       
@@ -113,7 +101,7 @@ export class McpService {
       this.isInitialized = true
       return tools
     } catch (error) {
-      console.error("Failed to parse MCP config file:", error)
+      console.error("Failed to initialize MCP tools:", error)
       // Return empty array instead of throwing to prevent chat interruption
       return []
     }

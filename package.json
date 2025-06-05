@@ -4,16 +4,14 @@
   "type": "module",
   "scripts": {
     "build": "nuxt build",
-    "dev": "nuxt dev",
+    "dev": "NODE_NO_WARNINGS=1 nuxt dev",
     "generate": "nuxt generate",
     "preview": "nuxt preview",
     "postinstall": "nuxt prepare",
     "prisma-deploy": "prisma migrate deploy",
     "prisma-migrate": "prisma migrate dev",
     "prisma-generate": "prisma generate",
-    "prisma-push": "prisma db push",
-    "research:install-tools": "bash scripts/install-mcp-tools.sh",
-    "research:setup": "bash scripts/setup.sh"
+    "prisma-push": "prisma db push"
   },
   "devDependencies": {
     "@esbuild/linux-x64": "^0.25.4",
