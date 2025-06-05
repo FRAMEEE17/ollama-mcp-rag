@@ -33,7 +33,7 @@ class ArxivTool {
       if (params.categories && params.categories.length > 0) {
         const categoryFilter = params.categories.map(cat => `cat:${cat}`).join(' OR ')
         searchQuery = `(${searchQuery}) AND (${categoryFilter})`
-        console.log('🏷️ [ ArXiv] Added categories:', categoryFilter)
+        console.log(' [ ArXiv] Added categories:', categoryFilter)
       }
 
       // Add date range filter if recent_only is true
@@ -46,7 +46,7 @@ class ArxivTool {
         const endDateStr = endDate.toISOString().split('T')[0].replace(/-/g, '')
 
         searchQuery = `submittedDate:[${startDateStr} TO ${endDateStr}] AND (${searchQuery})`
-        console.log('📅 [ ArXiv] Added date filter:', `${startDateStr} TO ${endDateStr}`)
+        console.log(' [ ArXiv] Added date filter:', `${startDateStr} TO ${endDateStr}`)
       }
 
       // Build URL with parameters
@@ -64,7 +64,7 @@ class ArxivTool {
         url.searchParams.set('sortOrder', 'descending')
       }
 
-      console.log('🌐 [ ArXiv] Final URL:', url.toString())
+      console.log(' [ ArXiv] Final URL:', url.toString())
 
       // Execute search
       const response = await fetch(url.toString(), {

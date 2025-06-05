@@ -20,13 +20,13 @@ export default defineEventHandler(async (event) => {
     const xmlText = await response.text()
     
     // Debug: Show first 500 characters of XML
-    console.log('📄 Raw XML (first 500 chars):', xmlText.substring(0, 500))
+    console.log('Raw XML (first 500 chars):', xmlText.substring(0, 500))
     
     // Count entries in XML
     const entryMatches = xmlText.match(/<entry>/g)
     const entryCount = entryMatches ? entryMatches.length : 0
     
-    console.log('📊 Found entries in XML:', entryCount)
+    console.log('Found entries in XML:', entryCount)
     
     // Try to extract one title manually
     const titleMatch = xmlText.match(/<title[^>]*>([^<]+)<\/title>/)
