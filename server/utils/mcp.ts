@@ -1,71 +1,124 @@
+// server/utils/mcp.ts
 import { spawn } from 'child_process'
 import fs from 'fs'
 
+interface ArxivSearchResult {
+  success: boolean
+  papers?: ArxivPaper[]
+  error?: string
+  total_results?: number
+  execution_time?: number
+}
+
+interface ArxivPaper {
+  id: string
+  title: string
+  summary: string
+  authors: Array<{ name: string }>
+  published: string
+  updated: string
+  categories: string[]
+  pdf_url: string
+  abstract_url: string
+  relevance_score?: number
+  keyword_matches?: string[]
+  age_days?: number
+}
+
+/**
+ * Simplified MCP Service that directly executes the research server
+ * This approach avoids the complexity of managing multiple protocol layers
+ */
 export class MCPService {
-  
-  async searchArxiv(query: string, maxResults: number = 5): Promise<any> {
-    console.log(`[Direct MCP] Searching ArXiv for: "${query}"`)
+  private serverPath: string
+  private isServerAvailable: boolean = false
+
+  constructor() {
+    this.serverPath = './mcp/servers/research-server.cjs'
+    this.checkServerAvailability()
+  }
+
+  /**
+   * Check if the MCP server file exists and is accessible
+   */
+  private checkServerAvailability(): void {
+    try {
+      this.isServerAvailable = fs.existsSync(this.serverPath)
+      if (this.isServerAvailable) {
+        console.log('[MCP Service] Research server found at:', this.serverPath)
+      } else {
+        console.warn('[MCP Service] Research server not found at:', this.serverPath)
+      }
+    } catch (error) {
+      console.error('[MCP Service] Error checking server availability:', error)
+      this.isServerAvailable = false
+    }
+  }
+
+  /**
+   * Search ArXiv for research papers using the MCP research server
+   * This method spawns the server process, communicates via JSON-RPC, and returns results
+   */
+  async searchArxiv(query: string, maxResults: number = 5): Promise<ArxivSearchResult> {
+    console.log(`[MCP Service] Searching ArXiv for: "${query}"`)
     
-    if (!fs.existsSync('./mcp/servers/research-server.cjs')) {
-      throw new Error('Research server not found')
+    if (!this.isServerAvailable) {
+      return {
+        success: false,
+        error: 'MCP research server not available',
+        papers: []
+      }
     }
 
+    const startTime = Date.now()
+    
     try {
-      const serverProcess = spawn('node', ['./mcp/servers/research-server.cjs'], {
+      // Spawn the MCP server process
+      const serverProcess = spawn('node', [this.serverPath], {
         stdio: ['pipe', 'pipe', 'pipe']
       })
 
       let serverOutput = ''
       let serverReady = false
+      let hasReceivedResponse = false
 
+      // Set up output handlers
       serverProcess.stdout.on('data', (data) => {
         serverOutput += data.toString()
       })
 
       serverProcess.stderr.on('data', (data) => {
         const log = data.toString()
-        console.log('[Direct MCP]', log.trim())
+        console.log('[MCP Service]', log.trim())
+        
+        // Check if server is ready
         if (log.includes('Enhanced server started successfully')) {
           serverReady = true
         }
       })
 
-      // Wait for server startup
-      await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          serverProcess.kill()
-          reject(new Error('Server timeout'))
-        }, 10000)
+      // Wait for server to be ready with timeout
+      await this.waitForCondition(() => serverReady, 10000, 'Server startup timeout')
+      
+      console.log('[MCP Service] Server ready, initializing connection...')
 
-        const checkReady = () => {
-          if (serverReady) {
-            clearTimeout(timeout)
-            resolve(void 0)
-          } else {
-            setTimeout(checkReady, 100)
-          }
-        }
-        checkReady()
-      })
-
-      console.log('[Direct MCP] Server ready, sending requests...')
-
-      // Initialize MCP
-      const initRequest = {
+      // Step 1: Initialize the MCP connection
+      const initMessage = {
         jsonrpc: "2.0",
         id: 1,
         method: "initialize",
         params: {
           protocolVersion: "2024-11-05",
           capabilities: {},
-          clientInfo: { name: "direct-client", version: "1.0.0" }
+          clientInfo: { name: "mcp-client", version: "1.0.0" }
         }
       }
-      serverProcess.stdin.write(JSON.stringify(initRequest) + '\n')
-      await this.sleep(1000)
 
-      // Search ArXiv
-      const searchRequest = {
+      serverProcess.stdin.write(JSON.stringify(initMessage) + '\n')
+      await this.sleep(1000) // Give server time to process
+
+      // Step 2: Execute ArXiv search
+      const searchMessage = {
         jsonrpc: "2.0",
         id: 2,
         method: "tools/call",
@@ -73,90 +126,150 @@ export class MCPService {
           name: "arxiv_query",
           arguments: {
             keywords: [query],
-            max_results: maxResults
+            max_results: maxResults,
+            sort_by: "relevance"
           }
         }
       }
-      serverProcess.stdin.write(JSON.stringify(searchRequest) + '\n')
-      await this.sleep(6000)
 
+      console.log('[MCP Service] Sending search request:', searchMessage.params)
+      serverProcess.stdin.write(JSON.stringify(searchMessage) + '\n')
+
+      // Wait for response with timeout
+      await this.waitForCondition(() => {
+        hasReceivedResponse = serverOutput.includes('"id":2')
+        return hasReceivedResponse
+      }, 15000, 'Search request timeout')
+
+      // Clean up process
       serverProcess.kill()
 
-      // Parse results
-      const responses = serverOutput.split('\n').filter(line => line.trim())
+      // Parse and return results
+      return this.parseServerResponse(serverOutput, startTime)
+
+    } catch (error) {
+      console.error('[MCP Service] Error during ArXiv search:', error)
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error occurred',
+        papers: [],
+        execution_time: Date.now() - startTime
+      }
+    }
+  }
+
+  /**
+   * Parse the server response and extract ArXiv results
+   */
+  private parseServerResponse(serverOutput: string, startTime: number): ArxivSearchResult {
+    const executionTime = Date.now() - startTime
+    
+    try {
+      // Split output by lines and find JSON responses
+      const lines = serverOutput.split('\n').filter(line => line.trim())
       
-      for (const responseLine of responses) {
+      for (const line of lines) {
         try {
-          const response = JSON.parse(responseLine)
+          const response = JSON.parse(line)
+          
+          // Look for our search response (id: 2)
           if (response.id === 2 && response.result?.content?.[0]?.text) {
-            const result = JSON.parse(response.result.content[0].text)
-            console.log(`[Direct MCP] ✅ Found ${result.papers?.length || 0} papers`)
-            return result
+            const resultText = response.result.content[0].text
+            const searchResult = JSON.parse(resultText)
+            
+            if (searchResult.success && searchResult.papers) {
+              console.log(`[MCP Service] Successfully found ${searchResult.papers.length} papers`)
+              
+              return {
+                success: true,
+                papers: searchResult.papers,
+                total_results: searchResult.papers.length,
+                execution_time: executionTime
+              }
+            } else {
+              return {
+                success: false,
+                error: searchResult.error || 'Search returned no results',
+                papers: [],
+                execution_time: executionTime
+              }
+            }
           }
-        } catch (e) {
+        } catch (parseError) {
+          // Skip non-JSON lines
           continue
         }
       }
 
-      return { success: false, error: 'No results found', papers: [] }
+      // If we get here, no valid response was found
+      return {
+        success: false,
+        error: 'No valid search results found in server response',
+        papers: [],
+        execution_time: executionTime
+      }
 
     } catch (error) {
-      console.error('[Direct MCP] Error:', error)
-      const errorMessage = error instanceof Error ? error.message : String(error)
-      return { success: false, error: errorMessage, papers: [] }
+      console.error('[MCP Service] Error parsing server response:', error)
+      return {
+        success: false,
+        error: 'Failed to parse server response',
+        papers: [],
+        execution_time: executionTime
+      }
     }
   }
 
+  /**
+   * Utility function to wait for a condition with timeout
+   */
+  private async waitForCondition(
+    condition: () => boolean, 
+    timeoutMs: number, 
+    errorMessage: string
+  ): Promise<void> {
+    const startTime = Date.now()
+    
+    while (!condition()) {
+      if (Date.now() - startTime > timeoutMs) {
+        throw new Error(errorMessage)
+      }
+      await this.sleep(100) // Check every 100ms
+    }
+  }
+
+  /**
+   * Simple sleep utility
+   */
   private sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms))
   }
-}
 
-// Legacy compatibility for existing code
-export class McpService {
-  private directMcp = new MCPService()
-
-  async listTools() {
-    return [{
-      name: 'arxiv_query',
-      description: 'Search ArXiv papers',
-      invoke: async (params: any) => {
-        const query = params.keywords?.[0] || params.query || 'machine learning'
-        return await this.directMcp.searchArxiv(query, params.max_results || 5)
-      }
-    }]
-  }
-
-  getStatus() {
+  /**
+   * Get service status for monitoring
+   */
+  getStatus(): any {
     return {
-      isInitialized: true,
-      hasActiveClient: true,
-      hasCachedTools: false,
-      cachedToolCount: 1,
-      cacheAge: 0,
-      isCacheValid: true
+      isServerAvailable: this.isServerAvailable,
+      serverPath: this.serverPath,
+      lastCheck: new Date().toISOString()
     }
   }
 
-  async close() {
-    console.log('[Direct MCP] Closed')
-  }
-
-  clearCache() {
-    console.log('[Direct MCP] Cache cleared')
-  }
-
-  async refreshTools() {
-    return await this.listTools()
+  /**
+   * Clean up resources (placeholder for future use)
+   */
+  async close(): Promise<void> {
+    console.log('[MCP Service] Service closed')
   }
 }
 
-// Export for compatibility with existing code
-let mcpServiceInstance: McpService | null = null
+// Export a singleton instance for consistency
+let mcpServiceInstance: MCPService | null = null
 
-export function getMcpService(): McpService {
+export function getMcpService(): MCPService {
   if (!mcpServiceInstance) {
-    mcpServiceInstance = new McpService()
+    mcpServiceInstance = new MCPService()
   }
   return mcpServiceInstance
 }

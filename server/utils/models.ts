@@ -1,6 +1,7 @@
 import { OpenAIEmbeddings } from "@langchain/openai"
 import { GoogleGenerativeAIEmbeddings } from "@langchain/google-genai"
 import { BaseChatModel } from "@langchain/core/language_models/chat_models"
+import { Embeddings } from "@langchain/core/embeddings"
 import { ChatAnthropic } from "@langchain/anthropic"
 import { ChatOllama, OllamaEmbeddings } from "@langchain/ollama"
 import { ChatOpenAI } from '@langchain/openai'
@@ -57,38 +58,109 @@ function openaiApiFillPath(endpoint: string) {
 }
 
 type InitChatParams = { key: string, endpoint: string, proxy?: boolean, deploymentName?: string }
+/**
+ * Enhanced NVIDIA model creation with proper message handling
+ * This fixes the message format issues you were experiencing
+ */
+function createNvidiaModel(modelName: string, apiKey: string, endpoint: string): BaseChatModel {
+  console.log(`[NVIDIA Model] Creating model: ${modelName}`)
+  
+  // Create base OpenAI-compatible model for NVIDIA API
+  const baseModel = new ChatOpenAI({
+    configuration: { 
+      baseURL: openaiApiFillPath(endpoint)
+    },
+    openAIApiKey: apiKey,
+    modelName: modelName,
+    // Critical NVIDIA API fixes
+    streamUsage: false,           // Prevents stream_options error
+    temperature: 0.7,
+    maxTokens: 2048,
+    // Remove any conflicting parameters
+    streaming: false              // Let the handler control streaming
+  });
 
-// **FIXED: Helper function to properly handle message format for NVIDIA API**
+  // Wrap the model to handle NVIDIA-specific quirks
+  return new Proxy(baseModel, {
+    get(target, prop, receiver) {
+      const originalMethod = Reflect.get(target, prop, receiver);
+      
+      // Intercept invoke and stream methods to fix message formatting
+      if (prop === 'invoke' || prop === 'stream') {
+        return async function(input: any, options?: any) {
+          // Fix message format before sending to NVIDIA API
+          const fixedInput = fixNvidiaMessageFormat(input);
+          console.log(`[NVIDIA Model] ${prop} called with ${Array.isArray(fixedInput) ? fixedInput.length : 1} messages`);
+          
+          try {
+            return await originalMethod.call(target, fixedInput, options);
+          } catch (error) {
+            console.error(`[NVIDIA Model] ${prop} error:`, error);
+            
+            // Handle specific NVIDIA API errors
+            if (error instanceof Error) {
+              if (error.message.includes('stream_options')) {
+                console.log('[NVIDIA Model] Retrying without streaming options...');
+                // Create a new model instance without streaming for this call
+                const retryModel = new ChatOpenAI({
+                  configuration: { baseURL: openaiApiFillPath(endpoint) },
+                  openAIApiKey: apiKey,
+                  modelName: modelName,
+                  streamUsage: false,
+                  temperature: 0.7,
+                  maxTokens: 2048
+                });
+                const method = retryModel[prop as keyof typeof retryModel];
+                if (typeof method === 'function') {
+                  return await (method as Function).apply(retryModel, [fixedInput, options]);
+                }
+                throw new Error(`Method ${String(prop)} is not callable`);
+              }
+            }
+            
+            throw error;
+          }
+        };
+      }
+      
+      return originalMethod;
+    }
+  }) as BaseChatModel;
+}
+
+/**
+ * Enhanced message format fixing for NVIDIA API
+ * This handles the various message format issues you encountered
+ */
 function fixNvidiaMessageFormat(input: any): any[] {
-  console.log('[NVIDIA] Input type:', typeof input, 'isArray:', Array.isArray(input));
-  console.log('[NVIDIA] Input:', JSON.stringify(input, null, 2));
-
-  // Handle different input formats
+  console.log('[NVIDIA Fix] Input type:', typeof input, 'isArray:', Array.isArray(input));
+  
   let messages: any[] = [];
 
+  // Handle different input formats
   if (Array.isArray(input)) {
     messages = input;
-  } else if (typeof input === 'object' && input !== null) {
-    // Handle the malformed object format like { "0": "user", "1": "content" }
+  } else if (input && typeof input === 'object') {
+    // Handle malformed object format like { "0": "user", "1": "content" }
     if (typeof input["0"] === 'string' && typeof input["1"] === 'string') {
-      console.log('[NVIDIA] Converting malformed object to proper message format');
+      console.log('[NVIDIA Fix] Converting malformed object to proper message format');
       messages = [{
         role: input["0"],
         content: input["1"]
       }];
-    } else {
+    } else if (input.role && input.content) {
       // Handle single message object
       messages = [input];
+    } else {
+      console.warn('[NVIDIA Fix] Unknown object format, attempting conversion');
+      messages = [{ role: 'user', content: JSON.stringify(input) }];
     }
   } else if (typeof input === 'string') {
     // Handle plain string input
-    messages = [{
-      role: 'user',
-      content: input
-    }];
+    messages = [{ role: 'user', content: input }];
   } else {
-    console.error('[NVIDIA] Unknown input format:', input);
-    return [];
+    console.error('[NVIDIA Fix] Unknown input format:', input);
+    messages = [{ role: 'user', content: String(input) }];
   }
 
   const fixedMessages: any[] = [];
@@ -109,32 +181,60 @@ function fixNvidiaMessageFormat(input: any): any[] {
 
     // Handle cases where role/content might be undefined
     if (!currentRole) {
-      console.log('[NVIDIA] Warning: message without role, defaulting to user');
+      console.log('[NVIDIA Fix] Warning: message without role, defaulting to user');
       currentRole = 'user';
     }
-    if (!content && content !== '') {
-      console.log('[NVIDIA] Warning: message without content');
+    
+    if (content === undefined || content === null) {
+      console.log('[NVIDIA Fix] Warning: message without content, using empty string');
       content = '';
+    }
+
+    // Convert content to string if it's not already
+    if (typeof content !== 'string') {
+      if (Array.isArray(content)) {
+        // Handle multimodal content - extract text parts
+        content = content
+          .filter(part => part.type === 'text')
+          .map(part => part.text)
+          .join(' ');
+      } else {
+        content = String(content);
+      }
     }
 
     // Skip consecutive messages with same role (except system)
     if (currentRole === lastRole && currentRole !== 'system') {
-      console.log(`[NVIDIA] Skipping duplicate ${currentRole} message`);
+      console.log(`[NVIDIA Fix] Skipping duplicate ${currentRole} message`);
       continue;
     }
 
-    // Create proper message format
+    // Ensure content is not empty
+    if (!content.trim() && currentRole !== 'system') {
+      console.log(`[NVIDIA Fix] Skipping empty ${currentRole} message`);
+      continue;
+    }
+
+    // Create proper message format for NVIDIA API
     const properMessage = {
       role: currentRole,
-      content: content
+      content: content.trim()
     };
 
     fixedMessages.push(properMessage);
     lastRole = currentRole;
   }
 
-  console.log(`[NVIDIA] Fixed messages: ${messages.length} → ${fixedMessages.length}`);
-  console.log(`[NVIDIA] Final messages:`, JSON.stringify(fixedMessages, null, 2));
+  // Ensure we have at least one message
+  if (fixedMessages.length === 0) {
+    console.log('[NVIDIA Fix] No valid messages found, adding default');
+    fixedMessages.push({
+      role: 'user',
+      content: 'Please respond.'
+    });
+  }
+
+  console.log(`[NVIDIA Fix] Final messages: ${messages.length} → ${fixedMessages.length}`);
   return fixedMessages;
 }
 
@@ -219,104 +319,91 @@ function initChat(family: string, modelName: string, params: InitChatParams, isC
   return null
 }
 
+/**
+ * Updated createChatModel function with proper NVIDIA integration
+ */
 export const createChatModel = (modelName: string, family: string, event: H3Event): BaseChatModel => {
   const keys = event.context.keys
   
   console.log(`[createChatModel] Creating model: ${modelName}, family: ${family}`)
-  console.log(`[createChatModel] Available keys:`, Object.keys(keys))
   
-  // **FIX: Normalize family names**
-  if (family === 'NVIDIA') family = 'nvidia'
-  if (family === 'VLLM') family = 'vllm'
+  // Normalize family names
+  const normalizedFamily = family.toLowerCase()
   
-  // **FIX: Handle NVIDIA with proper message format handling**
-  if (family === 'nvidia') {
-    console.log(`[createChatModel] Creating NVIDIA model with key: ${keys.nvidia?.key ? 'SET' : 'NOT SET'}`)
-    if (!keys.nvidia?.key) {
+  // Handle NVIDIA API with enhanced error handling
+  if (normalizedFamily === 'nvidia') {
+    console.log(`[createChatModel] Creating NVIDIA model`)
+    
+    if (!keys?.nvidia?.key) {
       throw new Error('NVIDIA API key not configured. Please set your NVIDIA API key in settings.')
     }
     
-    const baseModel = new ChatOpenAI({
-      configuration: { 
-        baseURL: openaiApiFillPath(keys.nvidia.endpoint || 'https://integrate.api.nvidia.com/v1')
-      },
-      openAIApiKey: keys.nvidia.key,
-      modelName: modelName,
-      // **CRITICAL FIXES for NVIDIA API**
-      streamUsage: false,           // Prevents stream_options error
-      temperature: 0.7,
-      maxTokens: 2048,
-    });
-
-    // **Create a proper wrapper that handles message format issues**
-    class NvidiaModelWrapper extends ChatOpenAI {
-      constructor(config: any) {
-        super(config);
-      }
-
-      async invoke(input: any, options?: any): Promise<any> {
-        console.log('[NVIDIA Wrapper] invoke called with:', typeof input);
-        const fixedMessages = fixNvidiaMessageFormat(input);
-        return super.invoke(fixedMessages, options);
-      }
-
-      async stream(input: any, options?: any): Promise<any> {
-        console.log('[NVIDIA Wrapper] stream called with:', typeof input);
-        const fixedMessages = fixNvidiaMessageFormat(input);
-        return super.stream(fixedMessages, options);
-      }
-    }
-
-    const wrappedModel = new NvidiaModelWrapper({
-      configuration: { 
-        baseURL: openaiApiFillPath(keys.nvidia.endpoint || 'https://integrate.api.nvidia.com/v1')
-      },
-      openAIApiKey: keys.nvidia.key,
-      modelName: modelName,
-      streamUsage: false,
-      temperature: 0.7,
-      maxTokens: 2048,
-    });
-
-    return wrappedModel as BaseChatModel;
+    const endpoint = keys.nvidia.endpoint || 'https://integrate.api.nvidia.com/v1'
+    return createNvidiaModel(modelName, keys.nvidia.key, endpoint)
   }
 
-  // **FIX: Handle VLLM with lowercase key**
-  if (family === 'vllm') {
-    console.log(`[createChatModel] Creating VLLM model with endpoint: ${keys.vllm?.endpoint}`)
+  // Handle VLLM with improved connection handling
+  if (normalizedFamily === 'vllm') {
+    console.log(`[createChatModel] Creating VLLM model`)
     
-    const model = initChat(MODEL_FAMILIES.vllm, modelName, {
-      key: keys.vllm?.key || 'EMPTY',
-      endpoint: keys.vllm?.endpoint || 'http://localhost:8694/v1',
-      proxy: keys.vllm?.proxy || false
+    const endpoint = keys.vllm?.endpoint || 'http://localhost:8694/v1'
+    const apiKey = keys.vllm?.key || 'EMPTY'
+    
+    // Test VLLM connection before creating model
+    testVLLMConnection(endpoint).catch(error => {
+      console.warn(`[VLLM] Connection test failed: ${error.message}`)
     })
     
-    if (!model) {
-      throw new Error(`Failed to create VLLM model: ${modelName}`)
-    }
+    const model = new ChatOpenAI({
+      configuration: { 
+        baseURL: openaiApiFillPath(endpoint)
+      },
+      openAIApiKey: apiKey,
+      modelName: modelName,
+      temperature: 0.7,
+      maxTokens: 2048
+    })
     
-    return model
+    return model as BaseChatModel
   }
+  /**
+ * Test VLLM server connection
+ */
+  async function testVLLMConnection(endpoint: string): Promise<void> {
+    try {
+      const response = await fetch(`${endpoint}/models`, {
+        signal: AbortSignal.timeout(5000)
+      })
+      
+      if (!response.ok) {
+        throw new Error(`VLLM server returned ${response.status}`)
+      }
+      
+      console.log('[VLLM] Connection test successful')
+    } catch (error) {
+      throw new Error(`VLLM server not accessible: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    }
+  }
+  
+  // Handle other model families (keep existing logic)
+  const [familyValue] = Object.entries(MODEL_FAMILIES).find(([key, val]) => val === normalizedFamily) || []
 
-  // Handle other model families using the existing logic
-  const [familyValue] = Object.entries(MODEL_FAMILIES).find(([key, val]) => val === family) || []
-
-  if (familyValue && familyValue !== 'nvidia' && familyValue !== 'vllm') {
+  if (familyValue && !['nvidia', 'vllm'].includes(familyValue)) {
     const data = keys[familyValue as Exclude<keyof ContextKeys, 'ollama' | 'custom' | 'nvidia' | 'vllm'>]
-    const model = initChat(family, modelName, data)
+    const model = initChat(normalizedFamily, modelName, data)
     if (model) return model as BaseChatModel
   }
 
   // Check custom models
-  const customModel = keys.custom.find(el => el.name === family)
+  const customModel = keys.custom.find(el => el.name === normalizedFamily)
   if (customModel && MODEL_FAMILIES.hasOwnProperty(customModel.aiType)) {
     const model = initChat(MODEL_FAMILIES[customModel.aiType as keyof typeof MODEL_FAMILIES], modelName, customModel, true)
     if (model) return model as BaseChatModel
   }
 
-  // **FIX: Only fall back to Ollama if family is explicitly 'ollama' or empty**
-  if (!family || family === 'ollama') {
-    console.log("Chat with Ollama, Host:", keys.ollama.endpoint)
+  // Fall back to Ollama only if family is explicitly 'ollama' or empty
+  if (!family || normalizedFamily === 'ollama') {
+    console.log("Creating Ollama model, Host:", keys.ollama.endpoint)
     return new ChatOllama({
       baseUrl: keys.ollama.endpoint,
       model: modelName,
@@ -324,9 +411,7 @@ export const createChatModel = (modelName: string, family: string, event: H3Even
     })
   }
 
-  // **FIX: Show available family keys in error message**
-  const availableFamilies = [...Object.keys(MODEL_FAMILIES), 'nvidia', 'vllm'].join(', ')
-  throw new Error(`Unsupported model family: ${family}. Available families: ${availableFamilies}`)
+  throw new Error(`Unsupported model family: ${family}. Available families: ${Object.keys(MODEL_FAMILIES).join(', ')}, nvidia, vllm`)
 }
 
 function getProxyEndpoint(endpoint: string, useProxy: boolean) {
