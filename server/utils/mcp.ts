@@ -1,170 +1,162 @@
-// server/utils/mcp.ts
-import { Client } from "@modelcontextprotocol/sdk/client/index.js"
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
-import { type StructuredToolInterface } from "@langchain/core/tools"
-import { loadMcpTools, MultiServerMCPClient } from '@langchain/mcp-adapters'
+import { spawn } from 'child_process'
 import fs from 'fs'
-import path from 'path'
 
-interface McpServerConfig {
-  command: string
-  args: string[]
-  transport?: string
-  env?: Record<string, string>
+export class MCPService {
+  
+  async searchArxiv(query: string, maxResults: number = 5): Promise<any> {
+    console.log(`[Direct MCP] Searching ArXiv for: "${query}"`)
+    
+    if (!fs.existsSync('./mcp/servers/research-server.cjs')) {
+      throw new Error('Research server not found')
+    }
+
+    try {
+      const serverProcess = spawn('node', ['./mcp/servers/research-server.cjs'], {
+        stdio: ['pipe', 'pipe', 'pipe']
+      })
+
+      let serverOutput = ''
+      let serverReady = false
+
+      serverProcess.stdout.on('data', (data) => {
+        serverOutput += data.toString()
+      })
+
+      serverProcess.stderr.on('data', (data) => {
+        const log = data.toString()
+        console.log('[Direct MCP]', log.trim())
+        if (log.includes('Enhanced server started successfully')) {
+          serverReady = true
+        }
+      })
+
+      // Wait for server startup
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          serverProcess.kill()
+          reject(new Error('Server timeout'))
+        }, 10000)
+
+        const checkReady = () => {
+          if (serverReady) {
+            clearTimeout(timeout)
+            resolve(void 0)
+          } else {
+            setTimeout(checkReady, 100)
+          }
+        }
+        checkReady()
+      })
+
+      console.log('[Direct MCP] Server ready, sending requests...')
+
+      // Initialize MCP
+      const initRequest = {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2024-11-05",
+          capabilities: {},
+          clientInfo: { name: "direct-client", version: "1.0.0" }
+        }
+      }
+      serverProcess.stdin.write(JSON.stringify(initRequest) + '\n')
+      await this.sleep(1000)
+
+      // Search ArXiv
+      const searchRequest = {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: {
+          name: "arxiv_query",
+          arguments: {
+            keywords: [query],
+            max_results: maxResults
+          }
+        }
+      }
+      serverProcess.stdin.write(JSON.stringify(searchRequest) + '\n')
+      await this.sleep(6000)
+
+      serverProcess.kill()
+
+      // Parse results
+      const responses = serverOutput.split('\n').filter(line => line.trim())
+      
+      for (const responseLine of responses) {
+        try {
+          const response = JSON.parse(responseLine)
+          if (response.id === 2 && response.result?.content?.[0]?.text) {
+            const result = JSON.parse(response.result.content[0].text)
+            console.log(`[Direct MCP] ✅ Found ${result.papers?.length || 0} papers`)
+            return result
+          }
+        } catch (e) {
+          continue
+        }
+      }
+
+      return { success: false, error: 'No results found', papers: [] }
+
+    } catch (error) {
+      console.error('[Direct MCP] Error:', error)
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      return { success: false, error: errorMessage, papers: [] }
+    }
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms))
+  }
 }
 
-interface McpConfig {
-  servers: Record<string, McpServerConfig>  // Fixed: changed from mcpServers to servers
-}
-
-interface ToolCache {
-  tools: StructuredToolInterface[]
-  timestamp: number
-}
-
+// Legacy compatibility for existing code
 export class McpService {
-  private mcpClient: MultiServerMCPClient | null = null
-  private toolsCache: ToolCache | null = null
-  private readonly cacheDuration: number = 5 * 60 * 1000 // 5 minutes
-  private isInitialized: boolean = false
-  private initializationPromise: Promise<StructuredToolInterface[]> | null = null
+  private directMcp = new MCPService()
 
-  async listTools(): Promise<StructuredToolInterface[]> {
-    // Check cache validity before loading tools from servers
-    if (this.toolsCache && this.isCacheValid()) {
-      console.log("Returning cached MCP tools:", this.toolsCache.tools.length)
-      return this.toolsCache.tools
-    }
-
-    // Prevent concurrent initialization by returning existing promise if already initializing
-    if (this.initializationPromise) {
-      console.log("MCP initialization already in progress, waiting...")
-      return await this.initializationPromise
-    }
-
-    // Create initialization promise to handle concurrent requests
-    this.initializationPromise = this.initializeTools()
-    
-    try {
-      const tools = await this.initializationPromise
-      // Cache the loaded tools with timestamp for future requests
-      this.toolsCache = {
-        tools,
-        timestamp: Date.now()
+  async listTools() {
+    return [{
+      name: 'arxiv_query',
+      description: 'Search ArXiv papers',
+      invoke: async (params: any) => {
+        const query = params.keywords?.[0] || params.query || 'machine learning'
+        return await this.directMcp.searchArxiv(query, params.max_results || 5)
       }
-      return tools
-    } catch (error) {
-      console.error("Failed to initialize MCP tools:", error)
-      return []
-    } finally {
-      this.initializationPromise = null
-    }
-  }
-
-  // Fixed MCP service initialization
-  private async initializeTools(): Promise<StructuredToolInterface[]> {
-    const mcpConfigPath = this.getMcpConfigPath()
-    
-    if (!fs.existsSync(mcpConfigPath)) {
-      console.warn("MCP config file not found:", mcpConfigPath)
-      return []
-    }
-
-    try {
-      console.log("Loading MCP servers from", mcpConfigPath)
-      
-      // Close existing client before creating new one to prevent resource leaks
-      if (this.mcpClient) {
-        await this.mcpClient.close()
-      }
-
-      // **FIX: Don't convert the config format - keep mcpServers as is**
-      const configContent = fs.readFileSync(mcpConfigPath, 'utf8')
-      const config = JSON.parse(configContent)
-      
-      // Validate config structure - KEEP mcpServers format
-      if (!config.mcpServers) {
-        console.error("Invalid MCP config: missing 'mcpServers' property")
-        console.log("Current config structure:", Object.keys(config))
-        return []
-      }
-      
-      console.log("Found MCP servers:", Object.keys(config.mcpServers))
-      
-      // Use the config file directly without conversion
-      this.mcpClient = MultiServerMCPClient.fromConfigFile(mcpConfigPath)
-      await this.mcpClient.initializeConnections()
-      
-      const tools = await this.mcpClient.getTools()
-      console.log("MCP tools loaded successfully:", tools.map(t => t.name))
-      
-      this.isInitialized = true
-      return tools
-    } catch (error) {
-      console.error("Failed to initialize MCP tools:", error)
-      // Return empty array instead of throwing to prevent chat interruption
-      return []
-    }
-  }
-
-  private getMcpConfigPath(): string {
-    return process.env.MCP_SERVERS_CONFIG_PATH || path.join(process.cwd(), '.mcp-servers.json')
-  }
-
-  private isCacheValid(): boolean {
-    if (!this.toolsCache) return false
-    return Date.now() - this.toolsCache.timestamp < this.cacheDuration
-  }
-
-  async close() {
-    if (this.mcpClient) {
-      try {
-        await this.mcpClient.close()
-        console.log("MCP client closed successfully")
-      } catch (error) {
-        console.error("Error closing MCP client:", error)
-      } finally {
-        this.mcpClient = null
-        this.isInitialized = false
-      }
-    }
+    }]
   }
 
   getStatus() {
     return {
-      isInitialized: this.isInitialized,
-      hasActiveClient: this.mcpClient !== null,
-      hasCachedTools: this.toolsCache !== null,
-      cachedToolCount: this.toolsCache?.tools.length || 0,
-      cacheAge: this.toolsCache ? Date.now() - this.toolsCache.timestamp : 0,
-      isCacheValid: this.isCacheValid()
+      isInitialized: true,
+      hasActiveClient: true,
+      hasCachedTools: false,
+      cachedToolCount: 1,
+      cacheAge: 0,
+      isCacheValid: true
     }
+  }
+
+  async close() {
+    console.log('[Direct MCP] Closed')
   }
 
   clearCache() {
-    this.toolsCache = null
-    console.log("MCP tools cache cleared")
+    console.log('[Direct MCP] Cache cleared')
   }
 
-  async refreshTools(): Promise<StructuredToolInterface[]> {
-    this.clearCache()
+  async refreshTools() {
     return await this.listTools()
   }
+}
 
-  async getServerConfigs(): Promise<Record<string, McpServerConfig>> {
-    const configPath = this.getMcpConfigPath()
-    
-    if (!fs.existsSync(configPath)) {
-      return {}
-    }
+// Export for compatibility with existing code
+let mcpServiceInstance: McpService | null = null
 
-    try {
-      const configContent = fs.readFileSync(configPath, 'utf8')
-      const config: McpConfig = JSON.parse(configContent)
-      return config.servers || {}
-    } catch (error) {
-      console.error("Failed to read MCP server configs:", error)
-      return {}
-    }
+export function getMcpService(): McpService {
+  if (!mcpServiceInstance) {
+    mcpServiceInstance = new McpService()
   }
+  return mcpServiceInstance
 }

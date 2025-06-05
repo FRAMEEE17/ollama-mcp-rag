@@ -1,0 +1,179 @@
+import { Client } from "@modelcontextprotocol/sdk/client/index.js"
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
+import { type StructuredToolInterface } from "@langchain/core/tools"
+import { loadMcpTools, MultiServerMCPClient } from '@langchain/mcp-adapters'
+import fs from 'fs'
+import path from 'path'
+
+interface McpServerConfig {
+  command: string
+  args: string[]
+  transport?: string
+  env?: Record<string, string>
+}
+
+interface McpConfig {
+  servers: Record<string, McpServerConfig>  // FIXED: Updated to use 'servers'
+}
+
+interface ToolCache {
+  tools: StructuredToolInterface[]
+  timestamp: number
+}
+
+export class McpService {
+  private mcpClient: MultiServerMCPClient | null = null
+  private toolsCache: ToolCache | null = null
+  private readonly cacheDuration: number = 5 * 60 * 1000 // 5 minutes
+  private isInitialized: boolean = false
+  private initializationPromise: Promise<StructuredToolInterface[]> | null = null
+
+  async listTools(): Promise<StructuredToolInterface[]> {
+    // Check cache validity before loading tools from servers
+    if (this.toolsCache && this.isCacheValid()) {
+      console.log("Returning cached MCP tools:", this.toolsCache.tools.length)
+      return this.toolsCache.tools
+    }
+
+    // Prevent concurrent initialization by returning existing promise if already initializing
+    if (this.initializationPromise) {
+      console.log("MCP initialization already in progress, waiting...")
+      return await this.initializationPromise
+    }
+
+    // Create initialization promise to handle concurrent requests
+    this.initializationPromise = this.initializeTools()
+    
+    try {
+      const tools = await this.initializationPromise
+      // Cache the loaded tools with timestamp for future requests
+      this.toolsCache = {
+        tools,
+        timestamp: Date.now()
+      }
+      return tools
+    } catch (error) {
+      console.error("Failed to initialize MCP tools:", error)
+      return []
+    } finally {
+      this.initializationPromise = null
+    }
+  }
+
+  // FIXED: Updated MCP service initialization for 'servers' format
+  private async initializeTools(): Promise<StructuredToolInterface[]> {
+    const mcpConfigPath = this.getMcpConfigPath()
+    
+    if (!fs.existsSync(mcpConfigPath)) {
+      console.warn("MCP config file not found:", mcpConfigPath)
+      return []
+    }
+
+    try {
+      console.log("Loading MCP servers from", mcpConfigPath)
+      
+      // Close existing client before creating new one to prevent resource leaks
+      if (this.mcpClient) {
+        await this.mcpClient.close()
+      }
+
+      // FIXED: Read and validate the new 'servers' format
+      const configContent = fs.readFileSync(mcpConfigPath, 'utf8')
+      const config = JSON.parse(configContent)
+      
+      // Check for new 'servers' format first, then fallback to legacy 'mcpServers'
+      if (config.servers) {
+        console.log("Found 'servers' format - using modern config")
+        console.log("Found MCP servers:", Object.keys(config.servers))
+      } else if (config.mcpServers) {
+        console.log("Found legacy 'mcpServers' format - converting to modern format")
+        // Convert legacy format to new format internally
+        const newConfig = {
+          servers: config.mcpServers
+        }
+        // Write the updated config back to file
+        fs.writeFileSync(mcpConfigPath, JSON.stringify(newConfig, null, 2))
+        console.log("Converted config to modern 'servers' format")
+      } else {
+        console.error("Invalid MCP config: missing both 'servers' and 'mcpServers' properties")
+        console.log("Current config structure:", Object.keys(config))
+        return []
+      }
+      
+      // Use the config file directly (now guaranteed to have 'servers' format)
+      this.mcpClient = MultiServerMCPClient.fromConfigFile(mcpConfigPath)
+      await this.mcpClient.initializeConnections()
+      
+      const tools = await this.mcpClient.getTools()
+      console.log("MCP tools loaded successfully:", tools.map((t: StructuredToolInterface) => t.name))
+      
+      this.isInitialized = true
+      return tools
+    } catch (error) {
+      console.error("Failed to initialize MCP tools:", error)
+      // Return empty array instead of throwing to prevent chat interruption
+      return []
+    }
+  }
+
+  private getMcpConfigPath(): string {
+    return process.env.MCP_SERVERS_CONFIG_PATH || path.join(process.cwd(), '.mcp-servers.json')
+  }
+
+  private isCacheValid(): boolean {
+    if (!this.toolsCache) return false
+    return Date.now() - this.toolsCache.timestamp < this.cacheDuration
+  }
+
+  async close() {
+    if (this.mcpClient) {
+      try {
+        await this.mcpClient.close()
+        console.log("MCP client closed successfully")
+      } catch (error) {
+        console.error("Error closing MCP client:", error)
+      } finally {
+        this.mcpClient = null
+        this.isInitialized = false
+      }
+    }
+  }
+
+  getStatus() {
+    return {
+      isInitialized: this.isInitialized,
+      hasActiveClient: this.mcpClient !== null,
+      hasCachedTools: this.toolsCache !== null,
+      cachedToolCount: this.toolsCache?.tools.length || 0,
+      cacheAge: this.toolsCache ? Date.now() - this.toolsCache.timestamp : 0,
+      isCacheValid: this.isCacheValid()
+    }
+  }
+
+  clearCache() {
+    this.toolsCache = null
+    console.log("MCP tools cache cleared")
+  }
+
+  async refreshTools(): Promise<StructuredToolInterface[]> {
+    this.clearCache()
+    return await this.listTools()
+  }
+
+  async getServerConfigs(): Promise<Record<string, McpServerConfig>> {
+    const configPath = this.getMcpConfigPath()
+    
+    if (!fs.existsSync(configPath)) {
+      return {}
+    }
+
+    try {
+      const configContent = fs.readFileSync(configPath, 'utf8')
+      const config: McpConfig = JSON.parse(configContent)
+      return config.servers || {}
+    } catch (error) {
+      console.error("Failed to read MCP server configs:", error)
+      return {}
+    }
+  }
+}

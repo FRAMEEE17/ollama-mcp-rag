@@ -47,10 +47,10 @@
     "@langchain/core": "^0.3.49",
     "@langchain/google-genai": "^0.1.5",
     "@langchain/groq": "^0.0.5",
-    "@langchain/mcp-adapters": "^0.3.4",
+    "@langchain/mcp-adapters": "0.3.3",
     "@langchain/ollama": "^0.2.0",
     "@langchain/openai": "^0.5.7",
-    "@modelcontextprotocol/sdk": "^1.7.0",
+    "@modelcontextprotocol/sdk": "0.5.0",
     "@nuxt/ui": "^2.17.0",
     "@nuxtjs/i18n": "^8.3.1",
     "@prisma/client": "^6.8.2",
@@ -66,6 +66,7 @@
     "dexie": "^4.0.7",
     "dotenv": "^16.5.0",
     "eventemitter3": "^5.0.1",
+    "eventsource-parser": "^3.0.2",
     "fast-xml-parser": "^5.2.3",
     "highlight.js": "^11.9.0",
     "html-to-text": "^9.0.5",
@@ -75,7 +76,7 @@
     "jsdom": "^24.0.0",
     "jsonwebtoken": "^9.0.2",
     "katex": "^0.16.21",
-    "langchain": "^0.1.31",
+    "langchain": "0.1.31",
     "langsmith": "^0.1.14",
     "lodash": "^4.17.21",
     "mammoth": "^1.7.1",
@@ -96,7 +97,7 @@
     "socks-proxy-agent": "^8.0.4",
     "ws": "^8.18.2",
     "yup": "^1.4.0",
-    "zod": "^3.25.32",
+    "zod": "3.23.8",
     "zod-to-json-schema": "^3.24.1"
   }
 }
